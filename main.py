@@ -1,8 +1,11 @@
 import xml.etree.ElementTree as ET
-import re
 import matplotlib.pyplot as plt
+"""
+#for with force-based linewidths
 from matplotlib.collections import LineCollection
 import numpy as np
+import re
+"""
 
 def parse_inkml_and_plot(file_path):
     try:
