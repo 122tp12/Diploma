@@ -1,5 +1,8 @@
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
+import numpy
+from typing import List
+import features
 """
 #for with force-based linewidths
 from matplotlib.collections import LineCollection
@@ -7,7 +10,7 @@ import numpy as np
 import re
 """
 
-def parse_inkml_and_plot(file_path):
+def parse_inkml_and_plot(file_path: str):
     try:
         tree = ET.parse(file_path)
     except FileNotFoundError:
@@ -26,11 +29,11 @@ def parse_inkml_and_plot(file_path):
     if not traces:
         print("No traces found.")
         return
-
-    all_strokes = []
-    numberss=[]
+    strokes = []
     for trace in traces:
         tmp=[]
+        if trace.text is None:
+            continue
         for sub_trace in trace.text.strip().split(','):
             if "\'" in sub_trace :
                 clean_text = sub_trace.replace("'", " ").strip()
@@ -43,39 +46,45 @@ def parse_inkml_and_plot(file_path):
                 parts= clean_text.split(' ')
                 
             tmp.append([float(p) for p in parts])
-        numberss.append(tmp)
+        strokes.append(tmp)
             
-    for numbers in numberss:
+    for points in strokes:
     
-        current_x = numbers[0][0]
-        current_y = numbers[0][1]
-        current_f=numbers[0][3]
-        stroke_points = [(-current_x, current_y, current_f)]
-        if len(numbers)<2:
+        current_x = points[0][0]
+        current_y = points[0][1]
+        current_t=points[0][2]
+        current_f=points[0][3]
+        stroke_points = [(-current_x, current_y, current_t, current_f)]
+        if len(points)<2:
             continue
         i=2
-        vx, vy, vf = numbers[1][0], numbers[1][1], numbers[1][3]
+        vx, vy, vt, vf = points[1][0], points[1][1], points[1][2], points[1][3]
 
         current_x += vx
         current_y += vy
+        current_t += vt
         current_f += vf
-        stroke_points.append((-current_x, current_y, current_f))
+        stroke_points.append((-current_x, current_y, current_t, current_f))
 
-        while i < len(numbers):
-            vx += numbers[i][0]
-            vy+=numbers[i][1]
-            vf+=numbers[i][3]
+        while i < len(points):
+            vx += points[i][0]
+            vy+=points[i][1]
+            vt+=points[i][2]
+            vf+=points[i][3]
             
             current_x += vx
             current_y += vy
+            current_t += vt
             current_f += vf
-            stroke_points.append((-current_x, current_y, current_f))
+            stroke_points.append((-current_x, current_y, current_t, current_f))
             
             i+=1
 
-        xs, ys, fs = zip(*stroke_points)
+        xs, ys, ts, fs = zip(*stroke_points)
         
-        plt.plot(xs, ys, color='black', linewidth=1)
+        plt.plot(xs, ys, color=numpy.random.rand(3,), linewidth=1)
+
+    
         """
         With force-based linewidths
         fs = [abs(f)/50 for f in fs]
@@ -86,7 +95,8 @@ def parse_inkml_and_plot(file_path):
         lc = LineCollection(segments, linewidths=fs[:-1], color='black')
         plt.gca().add_collection(lc)
         """
-        
+    
+    feat=features.extract_stroke_features(strokes)
 
     plt.axis('equal')
     plt.gca().axis('off')
