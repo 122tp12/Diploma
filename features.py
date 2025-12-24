@@ -1,6 +1,30 @@
 import numpy as np
 type list_strokes = list[list[list[float]]]
 
+# Utility functions to create edge by proximity and and time
+def get_edges(strokes: list_strokes, threshold: float = 50.0) -> list[tuple[int, int]]:
+    edges = []
+
+    for i in range(len(strokes)):
+        for j in range(len(strokes)):
+            if i == j:
+                continue
+            if i-1==j or i+1==j:
+                edges.append((i, j))
+                continue
+            for point1 in strokes[i]:
+                for point2 in strokes[j]:
+                    distance = np.sqrt((point2[0] - point1[0])**2 + (point2[1] - point1[1])**2)
+                    if distance < threshold:
+                        edges.append((i, j))
+                        break
+                else:
+                    continue
+                break
+
+    return edges
+
+# Node features:
 def stroke_length(strokes: list_strokes) -> list[float]:
     length = []
 
@@ -16,7 +40,6 @@ def stroke_length(strokes: list_strokes) -> list[float]:
 
     
     return length
-
 
 def width_height_ratio(strokes: list_strokes) -> list[float]:
     ratio = []
@@ -34,9 +57,36 @@ def width_height_ratio(strokes: list_strokes) -> list[float]:
     
     return ratio
 
+# Edge features:
+def min_distance_between_strokes(strokes: list_strokes, edges:list[tuple[int, int]]) -> list[float]:
+    distances = []
 
+    for edge in edges:
+        stroke1 = strokes[edge[0]]
+        stroke2 = strokes[edge[1]]
+        min_distance = float('inf')
+
+        for point1 in stroke1:
+            for point2 in stroke2:
+                distance = np.sqrt((point2[0] - point1[0])**2 + (point2[1] - point1[1])**2)
+                if distance < min_distance:
+                    min_distance = distance
+
+        distances.append(min_distance)
+
+    return distances
+
+# Main function to extract all features
 def extract_stroke_features(strokes: list_strokes) -> dict:
+    edges=get_edges(strokes, threshold=10.0)
+    
     return {
-        "length": stroke_length(strokes),
-        "width_height_ratio": width_height_ratio(strokes)
+        "nodes":{
+            "length": stroke_length(strokes),
+            "width_height_ratio": width_height_ratio(strokes)
+        },
+        "edge_index": edges,
+        "edges_features": {
+            "min_distance": min_distance_between_strokes(strokes, edges)
+        }
     }
