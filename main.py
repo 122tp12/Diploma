@@ -3,13 +3,8 @@ import matplotlib.pyplot as plt
 import numpy
 from typing import List
 import features
-"""
-#for with force-based linewidths
-from matplotlib.collections import LineCollection
-import numpy as np
-import re
-"""
-
+# To save dependencies:
+# pip freeze > requirements.txt
 def parse_inkml_and_plot(file_path: str):
     try:
         tree = ET.parse(file_path)
@@ -84,17 +79,6 @@ def parse_inkml_and_plot(file_path: str):
         
         plt.plot(xs, ys, color=numpy.random.rand(3,), linewidth=1)
 
-    
-        """
-        With force-based linewidths
-        fs = [abs(f)/50 for f in fs]
-        
-        points = np.array([xs, ys]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        lc = LineCollection(segments, linewidths=fs[:-1], color='black')
-        plt.gca().add_collection(lc)
-        """
     
     feat=features.extract_stroke_features(strokes)
 
