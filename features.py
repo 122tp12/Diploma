@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 type list_strokes = list[list[list[float]]]
 
 # Utility functions to create edge by proximity and and time
@@ -90,3 +91,20 @@ def extract_stroke_features(strokes: list_strokes) -> dict:
             "min_distance": min_distance_between_strokes(strokes, edges)
         }
     }
+
+def get_masks(num_nodes: int) -> tuple[torch.Tensor, torch.Tensor]:
+    torch.manual_seed(42)
+    perm = torch.randperm(num_nodes)
+
+    separ = int(0.75 * num_nodes)
+
+    train_idx = perm[:separ]
+    val_idx = perm[separ:]
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+    train_mask[train_idx] = True
+    val_mask[val_idx] = True
+
+    return (train_mask, val_mask)
