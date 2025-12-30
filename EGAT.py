@@ -43,7 +43,7 @@ def train(model, data):
     """Train a GNN model and return the trained model."""
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = model.optimizer
-    epochs = 200
+    epochs = 1000
 
     model.train()
     for epoch in range(epochs+1):

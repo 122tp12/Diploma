@@ -13,7 +13,7 @@ import features
 # pip freeze > requirements.txt
 
 def plot_strokes(strokes: List[List[List[float]]], clasified):
-    i=0
+    j=0
     for points in strokes:
     
         current_x = points[0][0]
@@ -47,9 +47,12 @@ def plot_strokes(strokes: List[List[List[float]]], clasified):
             i+=1
 
         xs, ys, ts, fs = zip(*stroke_points)
+        if clasified[j]==1:
+            plt.plot(xs, ys, color='blue', linewidth=1)
+        else:
+            plt.plot(xs, ys, color='red', linewidth=1)
         
-        plt.plot(xs, ys, color=clasified[i], linewidth=1)
-        i+=1
+        j+=1
 
     plt.axis('equal')
     plt.gca().axis('off')
@@ -139,19 +142,65 @@ def parse_inkml(file_path: str) -> tuple[List[List[List[float]]], List[int]]:
     true_y=get_labeled_strokes(root)
     return (strokes, true_y)
 
-def train_model(strokes: List[List[List[float]]], true_y: List[int]):
+def train_model(strokes: List[List[List[float]]], true_y: List[int])-> tuple[List[int], EGAT_model]:
     num_nodes = 100
     num_edges = 300
-    in_channels = 2   # Розмірність ознак вузла
-    edge_dim = 1       # Розмірність ознак ребра
+    
+    
     out_channels = 2   # Кількість класів
-    hidden_channels = 8
+    hidden_channels = 100
 
     dict_features=features.extract_stroke_features(strokes)
+    in_channels = dict_features["nodes"].__len__()  # Кількість ознак вузла
+    edge_dim = dict_features["edges_features"].__len__()    # Розмірність ознак ребра
     data=Data(
-        x=torch.tensor(list(zip(dict_features["nodes"]["length"],dict_features["nodes"]["width_height_ratio"])), dtype=torch.float),
+        x=torch.tensor(list(zip(
+            dict_features["nodes"]["trajectory_length"],
+            dict_features["nodes"]["convex_hull_area"],
+            dict_features["nodes"]["duration"],
+            dict_features["nodes"]["pca_ratio"],
+            dict_features["nodes"]["rectangularity"],
+            dict_features["nodes"]["circular_variance"],
+            dict_features["nodes"]["centroid_offset"],
+            dict_features["nodes"]["accumulated_curvature"],
+            dict_features["nodes"]["accum_squared_perp"],
+            dict_features["nodes"]["accum_signed_perp"],
+            dict_features["nodes"]["width_norm"],
+            dict_features["nodes"]["height_norm"],
+            dict_features["nodes"]["num_temporal_neighbors"],
+            dict_features["nodes"]["num_spatial_neighbors"],
+            dict_features["nodes"]["avg_dist_time_neighbors"],
+            dict_features["nodes"]["std_dist_time_neighbors"],
+            dict_features["nodes"]["avg_len_time_neighbors"],
+            dict_features["nodes"]["std_len_time_neighbors"],
+            dict_features["nodes"]["avg_dist_space_neighbors"],
+            dict_features["nodes"]["std_dist_space_neighbors"],
+            dict_features["nodes"]["avg_len_space_neighbors"],
+            dict_features["nodes"]["std_len_space_neighbors"]
+
+            )), dtype=torch.float),
         edge_index=torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous(),
-        edge_attr=torch.tensor(list(zip(dict_features["edges_features"]["min_distance"])), dtype=torch.float),
+        edge_attr=torch.tensor(list(zip(
+            dict_features["edges_features"]["min_distance"],
+            dict_features["edges_features"]["min_endpoint_distance"],
+            dict_features["edges_features"]["max_endpoint_distance"],
+            dict_features["edges_features"]["bbox_centers_distance"],
+            dict_features["edges_features"]["centroid_dx"],
+            dict_features["edges_features"]["centroid_dy"],
+            dict_features["edges_features"]["offstroke_dx"],
+            dict_features["edges_features"]["offstroke_dy"],
+            dict_features["edges_features"]["temporal_distance"],
+            dict_features["edges_features"]["ratio_offstroke_to_temporal"],
+            dict_features["edges_features"]["ratio_offstrokex_to_temporal"],
+            dict_features["edges_features"]["ratio_offstrokey_to_temporal"],
+            dict_features["edges_features"]["bbox_area_ratio"],
+            dict_features["edges_features"]["bbox_width_ratio"],
+            dict_features["edges_features"]["bbox_height_ratio"],
+            dict_features["edges_features"]["bbox_diag_ratio"],
+            dict_features["edges_features"]["ratio_lengths"],
+            dict_features["edges_features"]["ratio_durations"],
+            dict_features["edges_features"]["ratio_curvatures"],
+            )), dtype=torch.float),
         y=torch.tensor(true_y, dtype=torch.long),
         
     )
@@ -165,8 +214,12 @@ def train_model(strokes: List[List[List[float]]], true_y: List[int]):
 
     #print("Розмірність виходу:", out.shape)
     print("Успішний прохід!")
-    return out
+    return out, model
 
 strokes, true_y = parse_inkml('./IAMonDo-db-1.0/001.inkml')
-clasified=train_model(strokes, true_y)
+clasified, model=train_model(strokes, true_y)
+plot_strokes(strokes, clasified)
+
+strokes, true_y = parse_inkml('./IAMonDo-db-1.0/001d.inkml')
+clasified, model=train_model(strokes, true_y)
 plot_strokes(strokes, clasified)
