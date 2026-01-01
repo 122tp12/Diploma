@@ -1,8 +1,10 @@
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import numpy
-from typing import List
+from typing import List, Optional
 from torch_geometric.data import Data
+import torch_geometric.transforms as T
+from sklearn.preprocessing import StandardScaler
 
 import torch
 import torch.nn.functional as F
@@ -12,10 +14,10 @@ import features
 # To save dependencies:
 # pip freeze > requirements.txt
 
-def plot_strokes(strokes: List[List[List[float]]], clasified):
+def plot_strokes(strokes: dict, clasified):
     j=0
-    for points in strokes:
-    
+    for j in range(strokes.__len__()):
+        points=strokes['t'+j.__str__()]
         current_x = points[0][0]
         current_y = points[0][1]
         current_t=points[0][2]
@@ -47,10 +49,21 @@ def plot_strokes(strokes: List[List[List[float]]], clasified):
             i+=1
 
         xs, ys, ts, fs = zip(*stroke_points)
-        if clasified[j]==1:
-            plt.plot(xs, ys, color='blue', linewidth=1)
+        if type(clasified)==dict:
+            if clasified['t'+j.__str__()]==1:
+                plt.plot(xs, ys, color='blue', linewidth=1)
+            elif clasified['t'+j.__str__()]==-1:
+                plt.plot(xs, ys, color='green', linewidth=1)
+            else:
+                plt.plot(xs, ys, color='red', linewidth=1)
         else:
-            plt.plot(xs, ys, color='red', linewidth=1)
+            if clasified[j]==1:
+                plt.plot(xs, ys, color='blue', linewidth=1)
+            elif clasified[j]==-1:
+                plt.plot(xs, ys, color='green', linewidth=1)
+            else:
+                plt.plot(xs, ys, color='red', linewidth=1)
+            
         
         j+=1
 
@@ -59,167 +72,69 @@ def plot_strokes(strokes: List[List[List[float]]], clasified):
     plt.title("Render InkML")
     plt.show()
 
-def parse_inkml(file_path: str) -> tuple[List[List[List[float]]], List[int]]:
-    def get_labeled_strokes(root):
-        """
-    Приймає root XML-дерева.
-    Повертає список словників: [{'id': 't1', 'label': 1}, ...]
-    де 1 - Текст, 0 - Не текст.
-        """
-        dataset = []
-    
-        # Визначаємо множини для типів (можна розширювати)
-        TEXT_TYPES = {'Textblock', 'Textline', 'Word', 'Correction'}
-        NONTEXT_TYPES = {'Diagram', 'Drawing', 'Marking', 'Marking_Underline', 
-                     'Marking_Angle', 'Marking_Bracket', 'Marking_Sideline'}
+def load_batch(path, device='cpu')-> tuple[dict, dict]:
+    ckpt = torch.load(path, map_location=device)
+    return ckpt['strokes'], ckpt['labels']
 
-        def _walk(node, current_label):
-            """Внутрішня функція для обходу дерева зі збереженням контексту"""
-            new_label = current_label
-        
-            # 1. Шукаємо анотацію типу у поточному вузлі (через ітерацію, щоб ігнорувати namespaces)
-            for child in node:
-                if child.tag.endswith('annotation') and child.attrib.get('type') == 'type':
-                    ann_text = child.text
-                    if ann_text in TEXT_TYPES:
-                        new_label = 1 # Клас: Текст
-                    elif ann_text in NONTEXT_TYPES:
-                        new_label = 0 # Клас: Не текст
-        
-            # 2. Якщо це штрих (є посилання traceDataRef), записуємо результат
-            ref = node.attrib.get('traceDataRef')
-            if ref:
-                # Видаляємо '#' з ID та додаємо в масив
-                clean_id = ref.replace('#', '')
-                dataset.append(new_label)
-                # Штрих - це лист дерева, далі йти не треба
-                return
-
-            # 3. Якщо це контейнер (traceView) - йдемо вглиб (рекурсія)
-            # Ми не використовуємо тут findall('.//'), щоб не перескочити рівні вкладеності
-            for child in node:
-                if child.tag.endswith('traceView'):
-                    _walk(child, new_label)
-
-        # Точка входу: шукаємо кореневі traceView
-        for child in root:
-            if child.tag.endswith('traceView'):
-                _walk(child, -1) # -1 означає "невідомий тип" (на випадок помилки розмітки)
-
-        return dataset
-    
-    tree = ET.parse(file_path)
-
-    root = tree.getroot()
-
-    traces = root.findall('.//{http://www.w3.org/2003/InkML}trace')
-    if not traces:
-        traces = root.findall('.//trace')
-
-    if not traces:
-        print("No traces found.")
-        raise ValueError("No traces found in the InkML file.")
-    
-    strokes = []
-    for trace in traces:
-        tmp=[]
-        if trace.text is None:
-            continue
-        for sub_trace in trace.text.strip().split(','):
-            if "\'" in sub_trace :
-                clean_text = sub_trace.replace("'", " ").strip()
-                parts = clean_text.split(' ')
-            elif '\"' in sub_trace:
-                clean_text = sub_trace.replace('"', " ").strip()
-                parts = clean_text.split(' ')
-            else:
-                clean_text=sub_trace.replace('-', " -").strip()
-                parts= clean_text.split(' ')
-                
-            tmp.append([float(p) for p in parts])
-        strokes.append(tmp)
-    
-    true_y=get_labeled_strokes(root)
-    return (strokes, true_y)
-
-def train_model(strokes: List[List[List[float]]], true_y: List[int])-> tuple[List[int], EGAT_model]:
-    num_nodes = 100
-    num_edges = 300
-    
-    
+def train_model(strokes_dict: dict, true_y_dict: dict, model: Optional[EGAT_model]=None)-> tuple[List[int], EGAT_model]:
     out_channels = 2   # Кількість класів
-    hidden_channels = 100
+    hidden_channels = 30
+    strokes=[]
+    true_y=[]
+    
+    
+    for i in list(strokes_dict.keys()):
+        strokes.append(strokes_dict[i])
+        true_y.append(true_y_dict[i])
+    
 
     dict_features=features.extract_stroke_features(strokes)
     in_channels = dict_features["nodes"].__len__()  # Кількість ознак вузла
     edge_dim = dict_features["edges_features"].__len__()    # Розмірність ознак ребра
+    
     data=Data(
         x=torch.tensor(list(zip(
-            dict_features["nodes"]["trajectory_length"],
-            dict_features["nodes"]["convex_hull_area"],
+            dict_features["nodes"]["length"],
+            dict_features["nodes"]["width_height_ratio"],
+            dict_features["nodes"]["stroke_area"],
+            dict_features["nodes"]["straightness"],
+            dict_features["nodes"]["num_spatial_neighbors"],
             dict_features["nodes"]["duration"],
             dict_features["nodes"]["pca_ratio"],
-            dict_features["nodes"]["rectangularity"],
-            dict_features["nodes"]["circular_variance"],
-            dict_features["nodes"]["centroid_offset"],
             dict_features["nodes"]["accumulated_curvature"],
-            dict_features["nodes"]["accum_squared_perp"],
-            dict_features["nodes"]["accum_signed_perp"],
-            dict_features["nodes"]["width_norm"],
-            dict_features["nodes"]["height_norm"],
-            dict_features["nodes"]["num_temporal_neighbors"],
-            dict_features["nodes"]["num_spatial_neighbors"],
-            dict_features["nodes"]["avg_dist_time_neighbors"],
-            dict_features["nodes"]["std_dist_time_neighbors"],
-            dict_features["nodes"]["avg_len_time_neighbors"],
-            dict_features["nodes"]["std_len_time_neighbors"],
-            dict_features["nodes"]["avg_dist_space_neighbors"],
-            dict_features["nodes"]["std_dist_space_neighbors"],
-            dict_features["nodes"]["avg_len_space_neighbors"],
-            dict_features["nodes"]["std_len_space_neighbors"]
-
             )), dtype=torch.float),
         edge_index=torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous(),
         edge_attr=torch.tensor(list(zip(
             dict_features["edges_features"]["min_distance"],
             dict_features["edges_features"]["min_endpoint_distance"],
-            dict_features["edges_features"]["max_endpoint_distance"],
-            dict_features["edges_features"]["bbox_centers_distance"],
-            dict_features["edges_features"]["centroid_dx"],
-            dict_features["edges_features"]["centroid_dy"],
-            dict_features["edges_features"]["offstroke_dx"],
-            dict_features["edges_features"]["offstroke_dy"],
+            dict_features["edges_features"]["centroid_distance"],
+            dict_features["edges_features"]["direction_cosine"],
             dict_features["edges_features"]["temporal_distance"],
-            dict_features["edges_features"]["ratio_offstroke_to_temporal"],
-            dict_features["edges_features"]["ratio_offstrokex_to_temporal"],
-            dict_features["edges_features"]["ratio_offstrokey_to_temporal"],
-            dict_features["edges_features"]["bbox_area_ratio"],
-            dict_features["edges_features"]["bbox_width_ratio"],
-            dict_features["edges_features"]["bbox_height_ratio"],
-            dict_features["edges_features"]["bbox_diag_ratio"],
-            dict_features["edges_features"]["ratio_lengths"],
-            dict_features["edges_features"]["ratio_durations"],
-            dict_features["edges_features"]["ratio_curvatures"],
+            dict_features["edges_features"]["centroid_dx"],
+            
             )), dtype=torch.float),
         y=torch.tensor(true_y, dtype=torch.long),
         
     )
-    data.train_mask, data.val_mask = features.get_masks(true_y.__len__())
 
-    model = EGAT_model(in_channels, hidden_channels, out_channels, edge_dim)
+    scaler = StandardScaler()
+    data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
+    data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
+
+    data.train_mask, data.val_mask = features.get_masks(true_y.__len__())
+    if model==None:
+        model = EGAT_model(in_channels, hidden_channels, out_channels, edge_dim)
     model=train(model, data)
     out = model(data.x, data.edge_index, data.edge_attr)
 
     out=out.argmax(dim=1).numpy().tolist()
 
-    #print("Розмірність виходу:", out.shape)
-    print("Успішний прохід!")
     return out, model
 
-strokes, true_y = parse_inkml('./IAMonDo-db-1.0/001.inkml')
-clasified, model=train_model(strokes, true_y)
-plot_strokes(strokes, clasified)
+print(torch.cuda.is_available())
 
-strokes, true_y = parse_inkml('./IAMonDo-db-1.0/001d.inkml')
-clasified, model=train_model(strokes, true_y)
-plot_strokes(strokes, clasified)
+strokes, true_y = load_batch('batches/batch0.pt', device='cpu')
+
+clasified, model=train_model(strokes[0], true_y[0])#TODO: full batch
+plot_strokes(strokes[0], true_y[0])
+plot_strokes(strokes[0], clasified)
