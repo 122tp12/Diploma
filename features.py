@@ -550,7 +550,7 @@ def node_geometric_features(strokes: list_strokes, edges: list[tuple[int,int]]) 
     }
 
 # Main function to extract all features
-def extract_stroke_features(strokes: list_strokes) -> dict:
+def extract_stroke_features(strokes: list_strokes, offset) -> dict:
     edges = get_edges(strokes, threshold=10.0)
     node_feats = node_geometric_features(strokes, edges)
 
@@ -566,7 +566,7 @@ def extract_stroke_features(strokes: list_strokes) -> dict:
             "accumulated_curvature": node_feats.get("accumulated_curvature", [])
         }
 
-    # Keep only 5 edge features
+    
     edges_out = {
             "min_distance": min_distance_between_strokes(strokes, edges),
             "min_endpoint_distance": min_endpoint_distance(strokes, edges),
@@ -575,10 +575,12 @@ def extract_stroke_features(strokes: list_strokes) -> dict:
             "temporal_distance": temporal_distance_between_strokes(strokes, edges),
             "centroid_dx": horiz_vert_centroid_distances(strokes, edges)[0]
         }
-
+    
+    apply_offset_edges = [(a+offset, b+offset) for (a,b) in edges]
+    
     return {
         "nodes": nodes_out,
-        "edge_index": edges,
+        "edge_index": apply_offset_edges,
         "edges_features": edges_out
     }
 

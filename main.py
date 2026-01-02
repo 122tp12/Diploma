@@ -1,3 +1,4 @@
+import os
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import numpy
@@ -72,69 +73,118 @@ def plot_strokes(strokes: dict, clasified):
     plt.title("Render InkML")
     plt.show()
 
-def load_batch(path, device='cpu')-> tuple[dict, dict]:
+def load_batch(path, device)-> tuple[List[dict], List[dict]]:
     ckpt = torch.load(path, map_location=device)
     return ckpt['strokes'], ckpt['labels']
 
-def train_model(strokes_dict: dict, true_y_dict: dict, model: Optional[EGAT_model]=None)-> tuple[List[int], EGAT_model]:
-    out_channels = 2   # Кількість класів
-    hidden_channels = 30
-    strokes=[]
-    true_y=[]
-    
-    
-    for i in list(strokes_dict.keys()):
-        strokes.append(strokes_dict[i])
-        true_y.append(true_y_dict[i])
-    
+def save_data_batch(data: Data, path: str):
+    torch.save(data, path)
 
-    dict_features=features.extract_stroke_features(strokes)
-    in_channels = dict_features["nodes"].__len__()  # Кількість ознак вузла
-    edge_dim = dict_features["edges_features"].__len__()    # Розмірність ознак ребра
-    
+def load_data_batch(path: str, device) -> Data:
+    data = torch.load(path, map_location=device, weights_only=False)
+    return data
+
+def process_data_batch(strokes_dict: List[dict], true_y_dict: List[dict]) -> Data:
+    if os.path.exists('batches/batch0_proc.pt'):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        return load_data_batch('batches/batch0_proc.pt', device=device)
+
+    x= torch.empty((0,8), dtype=torch.float)
+    edge_index=torch.empty((2,0), dtype=torch.long)
+    edge_attr=torch.empty((0,6), dtype=torch.float)
+    true_y=torch.empty((0,), dtype=torch.long)
+
+    offset=0
+    for i in range(strokes_dict.__len__()):
+        stroke=strokes_dict[i]
+        true_y_part=true_y_dict[i]
+        stroke_list=[]
+        for j in list(stroke.keys()):
+            stroke_list.append(stroke[j])
+
+        dict_features=features.extract_stroke_features(stroke_list, offset=offset)
+        x_tmp=torch.tensor(list(zip(
+                dict_features["nodes"]["length"],
+                dict_features["nodes"]["width_height_ratio"],
+                dict_features["nodes"]["stroke_area"],
+                dict_features["nodes"]["straightness"],
+                dict_features["nodes"]["num_spatial_neighbors"],
+                dict_features["nodes"]["duration"],
+                dict_features["nodes"]["pca_ratio"],
+                dict_features["nodes"]["accumulated_curvature"],
+                )), dtype=torch.float)
+        edge_index_tmp=torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous()
+        edge_attt_tmp=torch.tensor(list(zip(
+                dict_features["edges_features"]["min_distance"],
+                dict_features["edges_features"]["min_endpoint_distance"],
+                dict_features["edges_features"]["centroid_distance"],
+                dict_features["edges_features"]["direction_cosine"],
+                dict_features["edges_features"]["temporal_distance"],
+                dict_features["edges_features"]["centroid_dx"],
+                )), dtype=torch.float)
+        true_y_tmp=torch.tensor([true_y_part['t'+k.__str__()] for k in range(len(stroke_list))], dtype=torch.long)
+
+
+        x=torch.cat((x, x_tmp), dim=0)
+        edge_index=torch.cat((edge_index, edge_index_tmp), dim=1)
+        edge_attr=torch.cat((edge_attr, edge_attt_tmp), dim=0)
+        true_y=torch.cat((true_y, true_y_tmp), dim=0)
+
+        offset+=stroke_list.__len__()
+
     data=Data(
-        x=torch.tensor(list(zip(
-            dict_features["nodes"]["length"],
-            dict_features["nodes"]["width_height_ratio"],
-            dict_features["nodes"]["stroke_area"],
-            dict_features["nodes"]["straightness"],
-            dict_features["nodes"]["num_spatial_neighbors"],
-            dict_features["nodes"]["duration"],
-            dict_features["nodes"]["pca_ratio"],
-            dict_features["nodes"]["accumulated_curvature"],
-            )), dtype=torch.float),
-        edge_index=torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous(),
-        edge_attr=torch.tensor(list(zip(
-            dict_features["edges_features"]["min_distance"],
-            dict_features["edges_features"]["min_endpoint_distance"],
-            dict_features["edges_features"]["centroid_distance"],
-            dict_features["edges_features"]["direction_cosine"],
-            dict_features["edges_features"]["temporal_distance"],
-            dict_features["edges_features"]["centroid_dx"],
-            
-            )), dtype=torch.float),
-        y=torch.tensor(true_y, dtype=torch.long),
-        
-    )
-
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            y=true_y,
+        )
+    
     scaler = StandardScaler()
     data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
     data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
 
     data.train_mask, data.val_mask = features.get_masks(true_y.__len__())
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using device', device)
+
+    save_data_batch(data, 'batches/batch0_proc.pt')
+
+    data.x = data.x.to(device)
+    data.edge_attr = data.edge_attr.to(device)
+    data.edge_index = data.edge_index.to(device)
+    data.y = data.y.to(device)
+    data.train_mask = data.train_mask.to(device)
+    data.val_mask = data.val_mask.to(device)#TODO: cheak if works
+
+    return data
+
+def train_model(data: Data, device, model: Optional[EGAT_model]=None)-> tuple[List[int], EGAT_model]:
+    out_channels = 2   # Кількість класів
+    hidden_channels = 20
+    
+    in_channels = data.x.size(1)
+    edge_dim = data.edge_attr.size(1)
+
     if model==None:
         model = EGAT_model(in_channels, hidden_channels, out_channels, edge_dim)
+        model = model.to(device)
+        # recreate optimizer so optimizer state lives on same device
+        model.optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
+        
     model=train(model, data)
     out = model(data.x, data.edge_index, data.edge_attr)
 
-    out=out.argmax(dim=1).numpy().tolist()
+    out=out.argmax(dim=1).to(torch.device('cpu')).numpy().tolist()
 
     return out, model
 
-print(torch.cuda.is_available())
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('Using device:', device)
 
-strokes, true_y = load_batch('batches/batch0.pt', device='cpu')
-
-clasified, model=train_model(strokes[0], true_y[0])#TODO: full batch
+strokes, true_y = load_batch('batches/batch0.pt', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+data=process_data_batch(strokes, true_y)
+data = data.to(device) 
+clasified, model=train_model(data, torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 plot_strokes(strokes[0], true_y[0])
 plot_strokes(strokes[0], clasified)

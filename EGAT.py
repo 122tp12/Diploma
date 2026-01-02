@@ -68,7 +68,7 @@ class EGAT_model(torch.nn.Module):
         torch.save(self.state_dict(), path)
 
     def load_model(self, path):
-        checkpoint = torch.load(path, map_location=torch.device('cpu'))
+        checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
         if isinstance(checkpoint, dict):
             self.load_state_dict(checkpoint)
         elif hasattr(checkpoint, 'state_dict'):
@@ -87,9 +87,11 @@ def test(model, data):
     return acc
 
 def train(model, data):
-    criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0]))
+    device = next(model.parameters()).device
+    weight = torch.tensor([1.0, 5.0], device=device)
+    criterion = torch.nn.CrossEntropyLoss(weight=weight)
     optimizer = model.optimizer
-    epochs = 800
+    epochs = 2000
     
     early_stopper = EarlyStopper(patience=300, path='best_egat.pt')
 
