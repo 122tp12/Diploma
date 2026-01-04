@@ -549,8 +549,8 @@ def node_geometric_features(strokes: list_strokes, edges: list[tuple[int,int]]) 
         "num_spatial_neighbors": num_space_neighbors,
     }
 
-# Main function to extract all features
-def extract_stroke_features(strokes: list_strokes, offset) -> dict:
+# TODO: add more features, fix speed
+def extract_stroke_features(strokes: list_strokes, offset) -> dict: 
     edges = get_edges(strokes, threshold=10.0)
     node_feats = node_geometric_features(strokes, edges)
 

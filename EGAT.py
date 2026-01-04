@@ -5,7 +5,7 @@ import numpy as np
 
 
 class EarlyStopper:
-    def __init__(self, patience=150, min_delta=0, path='best_model.pt'):
+    def __init__(self, patience=150, min_delta=0, path='tmp_best_current_model.pt'):
         """
         patience: скільки епох чекати після останнього покращення.
         min_delta: мінімальна зміна, яка вважається покращенням (щоб не реагувати на шум 0.000001).
@@ -29,8 +29,8 @@ class EarlyStopper:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
-    def load_best_model(self, model):
-        model.load_model(self.path)
+    def load_best_model(self, model, device):
+        model.load_model(self.path, device)
         return model
                 
 class EGAT_model(torch.nn.Module):
@@ -67,8 +67,8 @@ class EGAT_model(torch.nn.Module):
     def save_model(self, path):
         torch.save(self.state_dict(), path)
 
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+    def load_model(self, path, device):
+        checkpoint = torch.load(path, map_location=device)
         if isinstance(checkpoint, dict):
             self.load_state_dict(checkpoint)
         elif hasattr(checkpoint, 'state_dict'):
@@ -93,7 +93,7 @@ def train(model, data):
     optimizer = model.optimizer
     epochs = 2000
     
-    early_stopper = EarlyStopper(patience=300, path='best_egat.pt')
+    early_stopper = EarlyStopper(patience=300, path='./checkpoints/tmp_best_current_model.pt')
 
     model.train()
     for epoch in range(epochs+1):
@@ -119,7 +119,7 @@ def train(model, data):
             
         if early_stopper.early_stop:
             print(f"Early stopping triggered at epoch {epoch}!")
-            model=early_stopper.load_best_model(model)
+            model=early_stopper.load_best_model(model, device)
             break
           
     return model

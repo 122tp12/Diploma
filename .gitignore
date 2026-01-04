@@ -45,3 +45,9 @@ env/
 
 # Logs
 *.log
+
+# Temporary files
+.mypy_cache/
+
+# Checkpoints
+checkpoints/

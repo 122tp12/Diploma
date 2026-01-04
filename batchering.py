@@ -1,9 +1,7 @@
 from os import listdir
 from os.path import isfile, join
 import random
-from typing import List
 import xml.etree.ElementTree as ET
-import numpy as np
 import torch
 
 
@@ -24,8 +22,11 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
             'Marking_Underline', 'Marking_Sideline', 
             'Marking_Bracket', 'Marking_Angle', 
             'Marking_Connection',
+            'Document',
             'Garbage'                                       # Сміття
         }
+        IGNORE_TYPES = {'Document'}
+
         def _walk(node, current_label):
             """Внутрішня функція для обходу дерева зі збереженням контексту"""
             new_label = current_label
@@ -40,8 +41,6 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
                         new_label = 1 # Клас: Текст
                     elif ann_text in NONTEXT_TYPES:
                         new_label = 0 # Клас: Не текст
-                    else:
-                        new_label = -1 # Клас: Невідомий
         
             # 2. Якщо це штрих (є посилання traceDataRef), записуємо результат
             ref = node.attrib.get('traceDataRef')
@@ -60,7 +59,7 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
         # Точка входу: шукаємо кореневі traceView
         for child in root:
             if child.tag.endswith('traceView'):
-                _walk(child, -1) # -1 означає "невідомий тип" (на випадок помилки розмітки)
+                _walk(child, -1)
 
         return dataset
     
@@ -114,6 +113,16 @@ for batch_files in batches:
     for file in batch_files:
         file_path = join(mypath, file)
         strokes, true_y = parse_inkml(file_path)
+
+        for stroke in strokes.keys():
+            if true_y[stroke] not in [0,1]:
+                print(strokes[stroke])
+                print(true_y[stroke])
+                print("---------------")
+
+        for y in true_y.values():
+            if y not in [0,1]:
+                print("Unrecognized class label:", y)
 
         strokes_batch.append(strokes)
         true_y_batch.append(true_y)
