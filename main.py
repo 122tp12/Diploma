@@ -166,8 +166,8 @@ def process_data_batch(batch: str, device) -> Data:
 
 def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     out_channels = 2   # Кількість класів
-    hidden_channels = 15
-    hidden_layers = 1
+    hidden_channels = 20
+    hidden_layers = 2
     heads = 4
     
     path = './batches/'
@@ -197,7 +197,10 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     
     criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0], device=device))
 
-    early_stopper = EarlyStopper(patience=200, path='./checkpoints/tmp_best_current_model.pt')
+    global_train_acc=[]
+    global_val_acc=[]
+
+    early_stopper = EarlyStopper(patience=150, path='./checkpoints/tmp_best_current_model.pt')
     epochs = 1000
     for epoch in range(epochs):
         epoch_train_loss = 0
@@ -242,14 +245,27 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
                   f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
         
-
+        global_train_acc.append(avg_train_acc)
+        global_val_acc.append(avg_val_acc)
+        
         if early_stopper.early_stop:
             print(f"Early stopping triggered at epoch {epoch}!")
             model=early_stopper.load_best_model(model, device)
             return model
     
 
+    plt.plot(global_train_acc, global_val_acc)
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.title("Train and validation accuracy")
+
+    plt.show()
+
+
     model.save_model(f'./checkpoints/model_chekpoint_{datetime.datetime.now().timestamp()}.pt')
+
+    
 
     return model
 
