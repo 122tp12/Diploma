@@ -1,6 +1,11 @@
+import csv
 from genericpath import isfile
+from logging import config
 import os
+import shutil
+import json
 from posixpath import join
+import time
 from turtle import st
 import matplotlib.pyplot as plt
 from typing import List, Optional
@@ -10,6 +15,8 @@ from sklearn.preprocessing import StandardScaler
 import datetime
 
 import torch
+import gc
+from multiprocessing import Process
 
 from EGAT import EGAT_model, EarlyStopper, train_step, validate_step
 import features
@@ -74,7 +81,7 @@ def plot_strokes(strokes: dict, clasified):
     plt.title("Render InkML")
     plt.show()
 
-def _load_batch(path, device)-> tuple[List[dict], List[dict]]:
+def _load_batch(path, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     return ckpt['strokes'], ckpt['labels']
 
@@ -89,53 +96,45 @@ def process_data_batch(batch: str, device) -> Data:
     if os.path.exists(batch[:-3]+"_proc.pt"):
         return load_data_batch(batch[:-3]+"_proc.pt", device=device)
 
-    strokes_dict, true_y_dict=_load_batch(batch, device)
+    graphs, true_y_graphs=_load_batch(batch, device)
 
-    x= torch.empty((0,8), dtype=torch.float)
-    edge_index=torch.empty((2,0), dtype=torch.long)
-    edge_attr=torch.empty((0,6), dtype=torch.float)
-    true_y=torch.empty((0,), dtype=torch.long)
+    x_list = []
+    edge_index_list = []
+    edge_attr_list = []
+    y_list = []
 
     offset=0
-    for i in range(strokes_dict.__len__()):
-        stroke=strokes_dict[i]
-        true_y_part=true_y_dict[i]
-        stroke_list=[]
-        for j in list(stroke.keys()):
-            stroke_list.append(stroke[j])
+    configs={
+        "proxy_threshold":80.0,
+        "time_threshold":2.0
+    }
+    save_config(configs, "./batches/threshold.json")
+    for i in range(graphs.__len__()):
+        strokes=graphs[i]
+        current_y=true_y_graphs[i]
 
-        dict_features=features.extract_stroke_features(stroke_list, offset=offset) # TODO: change from stroke_list to stroke
-        x_tmp=torch.tensor(list(zip(
-                dict_features["nodes"]["length"],
-                dict_features["nodes"]["width_height_ratio"],
-                dict_features["nodes"]["stroke_area"],
-                dict_features["nodes"]["straightness"],
-                dict_features["nodes"]["num_spatial_neighbors"],
-                dict_features["nodes"]["duration"],
-                dict_features["nodes"]["pca_ratio"],
-                dict_features["nodes"]["accumulated_curvature"],
-                )), dtype=torch.float)
-        edge_index_tmp=torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous()
-        edge_attt_tmp=torch.tensor(list(zip(
-                dict_features["edges_features"]["min_distance"],
-                dict_features["edges_features"]["min_endpoint_distance"],
-                dict_features["edges_features"]["centroid_distance"],
-                dict_features["edges_features"]["direction_cosine"],
-                dict_features["edges_features"]["temporal_distance"],
-                dict_features["edges_features"]["centroid_dx"],
-                )), dtype=torch.float)
-        true_y_tmp=torch.tensor([true_y_part[k] for k in stroke.keys()], dtype=torch.long)
+        dict_features=features.extract_stroke_features(strokes, offset, configs['proxy_threshold'], configs['time_threshold'])
 
+        node_vals = list(dict_features["nodes"].values())
+        x_tmp = torch.tensor(list(zip(*node_vals)), dtype=torch.float)
+        x_list.append(x_tmp)
 
-        x=torch.cat((x, x_tmp), dim=0)
-        edge_index=torch.cat((edge_index, edge_index_tmp), dim=1)
-        edge_attr=torch.cat((edge_attr, edge_attt_tmp), dim=0)
-        true_y=torch.cat((true_y, true_y_tmp), dim=0)
+        edge_index_tmp = torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous()
+        edge_index_list.append(edge_index_tmp)
 
-        offset+=stroke.__len__()
+        edge_vals = list(dict_features["edges_features"].values())
+        edge_attr_tmp = torch.tensor(list(zip(*edge_vals)), dtype=torch.float)
+        edge_attr_list.append(edge_attr_tmp)
 
-    del strokes_dict
-    del true_y_dict
+        y_tmp = torch.tensor(current_y, dtype=torch.long)
+        y_list.append(y_tmp)
+
+        offset += x_tmp.size(0)
+
+    x = torch.cat(x_list, dim=0)
+    edge_attr = torch.cat(edge_attr_list, dim=0)
+    true_y = torch.cat(y_list, dim=0)
+    edge_index = torch.cat(edge_index_list, dim=1)
 
     data=Data(
             x=x,
@@ -164,12 +163,41 @@ def process_data_batch(batch: str, device) -> Data:
     _save_data_batch(data, batch[:-3]+"_proc.pt")
     return data
 
+def save_config(config: dict, path: str):
+    with open(path, 'w') as f:
+        json.dump(config, f, indent=4)
+def read_config(path: str):
+    with open(path, 'r') as f:
+        return json.load(f)
+
 def main_train_loop(device)-> tuple[List[int], EGAT_model]:
-    out_channels = 2   # Кількість класів
-    hidden_channels = 20
-    hidden_layers = 2
-    heads = 4
+    trs=read_config("./batches/threshold.json")
+    configs = {
+        "out_channels": 2,
+        "hidden_channels": 10,
+        "hidden_layers": 2,
+        "heads": 4,
+        "lr": 0.05,
+        "weight_decay": 5e-4,
+        "batch_size": 16, # Change manualy
+        "edge_treshhold": 80, # Change manualy
+        "epochs": 1000,
+        "factor": 0.5,
+        "early_stopper_patience": 150,
+        "scheduler_patience": 10,
+        "scheduler_threshold": 0.0001,
+        "proxy_threshold" : trs["proxy_threshold"],
+        "time_threshold" : trs["time_threshold"],
+        "description": "EGAT model training run"
+    }
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = f'./checkpoints/run_{timestamp}'
+    os.makedirs(run_dir, exist_ok=True)
     
+    save_config(configs, join(run_dir, 'config.json'))
+
+    # TODO: save proc files
+
     path = './batches/'
     files = [f for f in os.listdir(path) if f.endswith('_proc.pt')]
 
@@ -177,51 +205,56 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
 
     model = EGAT_model(
         in_channels=temp_data.x.size(1),
-        hidden_channels=hidden_channels,
-        out_channels=out_channels,
+        hidden_channels=configs["hidden_channels"],
+        out_channels=configs["out_channels"],
         edge_dim=temp_data.edge_attr.size(1),
-        heads=heads,
-        num_hiden_layers=hidden_layers
+        heads=configs["heads"],
+        num_hiden_layers=configs["hidden_layers"]
     ).to(device)
     
     del temp_data 
     torch.cuda.empty_cache()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.05, weight_decay=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
             mode='min', 
-            factor=0.5,
-            patience=10,
-            threshold=0.0001
+            factor=configs["factor"],
+            patience=configs["scheduler_patience"],
+            threshold=configs["scheduler_threshold"]
             )
     
     criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0], device=device))
 
-    global_train_acc=[]
-    global_val_acc=[]
+    log_file = join(run_dir, 'metrics.csv')
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'lr', 'time'])
 
-    early_stopper = EarlyStopper(patience=150, path='./checkpoints/tmp_best_current_model.pt')
-    epochs = 1000
-    for epoch in range(epochs):
+    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
+
+    early_stopper = EarlyStopper(patience=configs["early_stopper_patience"], path='./checkpoints/tmp_best_current_model.pt')
+
+    for epoch in range(configs["epochs"]):
+        start_time = time.time()
+
         epoch_train_loss = 0
         epoch_val_loss = 0
         epoch_train_acc = 0
         epoch_val_acc = 0
         count = 0
         
-        # --- Цикл по файлах (завантажив -> навчив -> видалив) ---
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         for file_name in files:
-            # А. Завантаження
+            
+            
             full_path = join(path, file_name)
             data = load_data_batch(full_path, device)
-            
-            # Б. Крок навчання
+
             loss, acc = train_step(model, data, criterion, optimizer)
-            
-            # В. Крок валідації (одразу на цьому ж графі)
             val_loss, val_acc = validate_step(model, data, criterion)
             
-            # Г. Статистика
             epoch_train_loss += loss
             epoch_train_acc += acc
             
@@ -230,6 +263,8 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
             count += 1
             
             del data
+            gc.collect()
+            torch.cuda.empty_cache()
         
         avg_train_loss = epoch_train_loss / count
         avg_train_acc = epoch_train_acc / count
@@ -240,48 +275,67 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         early_stopper(avg_val_loss, model)
 
         current_lr = optimizer.param_groups[0]['lr']
+        epoch_time = time.time() - start_time
+        
+        with open(log_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, avg_train_loss, avg_train_acc, avg_val_loss, avg_val_acc, current_lr, epoch_time])
+        
+        history['train_loss'].append(avg_train_loss)
+        history['train_acc'].append(avg_train_acc)
+        history['val_loss'].append(avg_val_loss)
+        history['val_acc'].append(avg_val_acc)
+
         if epoch % 1 == 0:
             print(f'Epoch {epoch:>3} | Train Loss: {avg_train_loss:.5f} | Train Acc: '
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
                   f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
-        
-        global_train_acc.append(avg_train_acc)
-        global_val_acc.append(avg_val_acc)
-        
+            
+        if epoch+1 % 500==0:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'criterion_dict': criterion.state_dict(),
+                'loss': avg_val_loss,
+                'config': configs
+            }
+            torch.save(checkpoint, join(run_dir, 'last_checkpoint.pt'))
+
         if early_stopper.early_stop:
             print(f"Early stopping triggered at epoch {epoch}!")
             model=early_stopper.load_best_model(model, device)
-            return model
-    
-
-    plt.plot(global_train_acc, global_val_acc)
-
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Train and validation accuracy")
-
-    plt.show()
-
-
-    model.save_model(f'./checkpoints/model_chekpoint_{datetime.datetime.now().timestamp()}.pt')
+            
+            break
 
     
+    model.save_model(join(run_dir, 'final_model.pt'))
 
     return model
-
 
 if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     path = './batches/'
     files = [f for f in os.listdir(path) if (isfile(join(path, f)) and f.endswith('.pt') and not f.endswith('_proc.pt'))]
 
+    threads = []
     for f in files:
-        strokes, true_y = _load_batch(path+f, device)
-        i=0
-        for i in range(strokes.__len__()):
-            if true_y[i].keys()!=strokes[i].keys():
-                print("Mismatch between strokes and labels keys in file:", f, "at index:", i)
-                
+        strokes, true_y = _load_batch(path+f, device)                
+        
         if not os.path.exists(join(path, f[:-3]+"_proc.pt")):
-            print(f"Processing {f}...")
-            process_data_batch(join(path, f), device)
+            
+            #process_data_batch(join(path, f), device)
+            t = Process(target=process_data_batch, args=(join(path, f),device))
+            
+            threads.append(t)
+
+    part_t=[]
+    for i in range(threads.__len__()):
+        if i%15==0:
+            for mt in part_t:
+                mt.join()
+            part_t=[]
+        threads[i].start()
+        part_t.append(threads[i])
+        i+=1

@@ -109,7 +109,7 @@ def test(model, data):
     return acc
 
 def train_step(model, data, criterion, optimizer):
-    model.train() # Вмикаємо режим навчання (важливо для Dropout)
+    model.train()
     
     # 1. Forward
     out = model(data.x, data.edge_index, data.edge_attr)
@@ -118,9 +118,9 @@ def train_step(model, data, criterion, optimizer):
     loss = criterion(out[data.train_mask], data.y[data.train_mask])
     
     # 3. Backward
-    optimizer.zero_grad() # Очищаємо старі градієнти
-    loss.backward()       # Рахуємо нові
-    optimizer.step()      # Оновлюємо ваги
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
     
     acc = accuracy(out[data.train_mask].argmax(dim=1), data.y[data.train_mask])
     

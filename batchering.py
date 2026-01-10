@@ -8,9 +8,9 @@ import torch
 mypath = './IAMonDo-db-1.0/'
 batch=16
 uniqe_types = []
-def parse_inkml(file_path: str) -> tuple[dict, dict]:
+def parse_inkml(file_path: str):
 
-    def get_labeled_strokes(root, num_strokes) -> dict:
+    def get_labeled_strokes(root) -> dict:
         dataset = {}
     
         TEXT_TYPES = {'Textblock', 'Textline', 'Word', 'Correction'}
@@ -31,7 +31,6 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
             """Внутрішня функція для обходу дерева зі збереженням контексту"""
             new_label = current_label
              
-            # 1. Шукаємо анотацію типу у поточному вузлі (через ітерацію, щоб ігнорувати namespaces)
             for child in node:
                 if child.tag.endswith('annotation') and child.attrib.get('type') == 'type':
                     ann_text = child.text
@@ -42,27 +41,64 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
                     elif ann_text in NONTEXT_TYPES:
                         new_label = 0 # Клас: Не текст
         
-            # 2. Якщо це штрих (є посилання traceDataRef), записуємо результат
             ref = node.attrib.get('traceDataRef')
             if ref:
                 
                 dataset[ref[1:]]=new_label
-                # Штрих - це лист дерева, далі йти не треба
                 return
 
-            # 3. Якщо це контейнер (traceView) - йдемо вглиб (рекурсія)
-            # Ми не використовуємо тут findall('.//'), щоб не перескочити рівні вкладеності
             for child in node:
                 if child.tag.endswith('traceView'):
                     _walk(child, new_label)
 
-        # Точка входу: шукаємо кореневі traceView
         for child in root:
             if child.tag.endswith('traceView'):
                 _walk(child, -1)
 
         return dataset
     
+    def to_absolute_coords_and_y_align(strokes: dict, true: dict):
+        strokes_list=[]
+        true_list=[]
+        for j in strokes.keys():
+            points=strokes[j]
+            current_x = points[0][0]
+            current_y = points[0][1]
+            current_t=points[0][2]
+            current_f=points[0][3]
+            # scrap f to save memory
+            stroke_points = [(-current_x, current_y, current_t)] # [(-current_x, current_y, current_t, current_f)]
+            if len(points)<2: # skip points to propper features
+                continue
+
+            true_list.append(true[j])
+
+            i=2
+            vx, vy, vt, vf = points[1][0], points[1][1], points[1][2], points[1][3]
+
+            current_x += vx
+            current_y += vy
+            current_t += vt
+            current_f += vf
+            stroke_points.append((-current_x, current_y, current_t))#stroke_points.append((-current_x, current_y, current_t, current_f))
+
+            while i < len(points):
+                vx += points[i][0]
+                vy += points[i][1]
+                vt += points[i][2]
+                vf += points[i][3]
+                
+                current_x += vx
+                current_y += vy
+                current_t += vt
+                current_f += vf
+                stroke_points.append((-current_x, current_y, current_t))#stroke_points.append((-current_x, current_y, current_t, current_f))
+                
+                i+=1
+            strokes_list.append(stroke_points)
+
+        return strokes_list, true_list
+
     tree = ET.parse(file_path)
 
     root = tree.getroot()
@@ -94,8 +130,10 @@ def parse_inkml(file_path: str) -> tuple[dict, dict]:
             tmp.append([float(p) for p in parts])
         strokes[trace.attrib[list(trace.attrib.keys())[0]]]=tmp
     
-    true_y=get_labeled_strokes(root, strokes.__len__())
+    true_y=get_labeled_strokes(root)
     
+    strokes, true_y=to_absolute_coords_and_y_align(strokes, true_y)
+
     return (strokes, true_y)
 
 def save_batch(path, strokes_batch, labels_batch):
@@ -113,16 +151,6 @@ for batch_files in batches:
     for file in batch_files:
         file_path = join(mypath, file)
         strokes, true_y = parse_inkml(file_path)
-
-        for stroke in strokes.keys():
-            if true_y[stroke] not in [0,1]:
-                print(strokes[stroke])
-                print(true_y[stroke])
-                print("---------------")
-
-        for y in true_y.values():
-            if y not in [0,1]:
-                print("Unrecognized class label:", y)
 
         strokes_batch.append(strokes)
         true_y_batch.append(true_y)
