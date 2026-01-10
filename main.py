@@ -3,6 +3,7 @@ from genericpath import isfile
 import os
 import json
 from posixpath import join
+import random
 import time
 import matplotlib.pyplot as plt
 from typing import List
@@ -15,7 +16,7 @@ import gc
 
 from multiprocessing import Pool
 
-from EGAT import EGAT_model, EarlyStopper, train_step, validate_step
+from EGAT import EGAT_model, EarlyStopper, test, train_step, validate_step
 import features
 
 # To save dependencies:
@@ -163,6 +164,26 @@ def read_config(path: str):
     with open(path, 'r') as f:
         return json.load(f)
 
+
+def set_batch_masks(data: Data, mode: str):
+    """
+    Overwrites masks so the model sees the WHOLE graph as either Train, Val, or Test.
+    """
+    num_nodes = data.x.size(0)
+    if mode == 'train':
+        data.train_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+    elif mode == 'val':
+        data.train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.val_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+    elif mode == 'test':
+        data.train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.test_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
+    return data
+
 def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     trs=read_config("./batches/setings.json")
     configs = {
@@ -189,13 +210,26 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = f'./checkpoints/run_{timestamp}'
     os.makedirs(run_dir, exist_ok=True)
-    
     save_config(configs, join(run_dir, 'config.json'))
 
     path = './batches/'
-    files = [f for f in os.listdir(path) if f.endswith('_proc.pt')]
+    all_files = [f for f in os.listdir(path) if f.endswith('_proc.pt')]
+    
+    random.seed(42)
+    random.shuffle(all_files)
+    
+    total_files = len(all_files)
+    n_train = int(0.8 * total_files)
+    n_val = int(0.1 * total_files)
+    # The rest is test
+    
+    train_files = all_files[:n_train]
+    val_files = all_files[n_train:n_train+n_val]
+    test_files = all_files[n_train+n_val:]
+    
+    print(f"Total Batches: {total_files} | Train: {len(train_files)} | Val: {len(val_files)} | Test: {len(test_files)}")
 
-    temp_data = load_data_batch(join(path, files[0]), device)
+    temp_data = load_data_batch(join(path, all_files[0]), device)
 
     model = EGAT_model(
         in_channels=temp_data.x.size(1),
@@ -224,46 +258,60 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         writer = csv.writer(f)
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'lr', 'time'])
 
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-
     early_stopper = EarlyStopper(patience=configs["early_stopper_patience"], path='./checkpoints/tmp_best_current_model.pt')
 
     for epoch in range(configs["epochs"]):
         start_time = time.time()
 
+        # --- TRAINING LOOP ---
         epoch_train_loss = 0
-        epoch_val_loss = 0
         epoch_train_acc = 0
-        epoch_val_acc = 0
-        count = 0
+        train_count = 0
         
-        gc.collect()
-        torch.cuda.empty_cache()
+        # Shuffle train files every epoch for better generalization
+        random.shuffle(train_files) 
         
-        for file_name in files:
-            
-            
+        for file_name in train_files:
             full_path = join(path, file_name)
             data = load_data_batch(full_path, device)
+            
+            data = set_batch_masks(data, 'train')
 
             loss, acc = train_step(model, data, criterion, optimizer)
-            val_loss, val_acc = validate_step(model, data, criterion)
             
             epoch_train_loss += loss
             epoch_train_acc += acc
+            train_count += 1
+            
+            del data
+            # Clean up frequently
+            # gc.collect() 
+            # torch.cuda.empty_cache()
+
+        # --- VALIDATION LOOP ---
+        epoch_val_loss = 0
+        epoch_val_acc = 0
+        val_count = 0
+        
+        for file_name in val_files:
+            full_path = join(path, file_name)
+            data = load_data_batch(full_path, device)
+
+            data = set_batch_masks(data, 'val')
+            
+            val_loss, val_acc = validate_step(model, data, criterion)
             
             epoch_val_loss += val_loss
             epoch_val_acc += val_acc
-            count += 1
+            val_count += 1
             
             del data
-            gc.collect()
-            torch.cuda.empty_cache()
         
-        avg_train_loss = epoch_train_loss / count
-        avg_train_acc = epoch_train_acc / count
-        avg_val_loss = epoch_val_loss / count
-        avg_val_acc = epoch_val_acc / count
+        # Avoid division by zero
+        avg_train_loss = epoch_train_loss / train_count if train_count > 0 else 0
+        avg_train_acc = epoch_train_acc / train_count if train_count > 0 else 0
+        avg_val_loss = epoch_val_loss / val_count if val_count > 0 else 0
+        avg_val_acc = epoch_val_acc / val_count if val_count > 0 else 0
 
         scheduler.step(avg_val_loss)
         early_stopper(avg_val_loss, model)
@@ -274,18 +322,13 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         with open(log_file, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_train_loss, avg_train_acc, avg_val_loss, avg_val_acc, current_lr, epoch_time])
-        
-        history['train_loss'].append(avg_train_loss)
-        history['train_acc'].append(avg_train_acc)
-        history['val_loss'].append(avg_val_loss)
-        history['val_acc'].append(avg_val_acc)
 
         if epoch % 1 == 0:
             print(f'Epoch {epoch:>3} | Train Loss: {avg_train_loss:.5f} | Train Acc: '
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
                   f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
             
-        if epoch+1 % 500==0:
+        if (epoch+1) % 500 == 0:
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -296,15 +339,34 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
                 'config': configs
             }
             torch.save(checkpoint, join(run_dir, 'last_checkpoint.pt'))
+            
+        # Clean memory at end of epoch
+        gc.collect()
+        torch.cuda.empty_cache()
 
         if early_stopper.early_stop:
             print(f"Early stopping triggered at epoch {epoch}!")
-            model=early_stopper.load_best_model(model, device)
-            
+            model = early_stopper.load_best_model(model, device)
             break
 
-    
     model.save_model(join(run_dir, 'final_model.pt'))
+    
+    # --- TEST LOOP ON TEST SET ---
+    print("\nStarting Test Evaluation...")
+    test_acc_sum = 0
+    test_count = 0
+    for file_name in test_files:
+        full_path = join(path, file_name)
+        data = load_data_batch(full_path, device)
+        data = set_batch_masks(data, 'test')
+        
+        acc = test(model, data) 
+        test_acc_sum += acc
+        test_count += 1
+        del data
+        
+    final_test_acc = test_acc_sum / test_count if test_count > 0 else 0
+    print(f"Final Test Accuracy: {final_test_acc*100:.2f}%")
 
     return model
 
@@ -313,8 +375,7 @@ def _config_get_feature_names() -> dict:
     dummy_strokes = [dummy_stroke, dummy_stroke]
 
     feature = features.extract_stroke_features(dummy_strokes, 0, 1000.0, 1000.0)
-
-    # Extract the keys directly from the result
+ 
     node_keys = list(feature["nodes"].keys())
     edge_keys = list(feature["edges_features"].keys())
 
