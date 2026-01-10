@@ -573,7 +573,8 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
         }
     
     applyed_offset_edges = [(a+offset, b+offset) for (a,b) in edges]
-    
+
+
     return {
         "nodes": nodes_out,
         "edge_index": applyed_offset_edges,

@@ -1,25 +1,23 @@
 import csv
 from genericpath import isfile
-from logging import config
 import os
-import shutil
 import json
 from posixpath import join
 import time
-from turtle import st
 import matplotlib.pyplot as plt
-from typing import List, Optional
-from sympy import true
+from typing import List
 from torch_geometric.data import Data
 from sklearn.preprocessing import StandardScaler
 import datetime
 
 import torch
 import gc
-from multiprocessing import Process
+
+from multiprocessing import Pool
 
 from EGAT import EGAT_model, EarlyStopper, train_step, validate_step
 import features
+
 # To save dependencies:
 # pip freeze > requirements.txt
 
@@ -84,7 +82,6 @@ def plot_strokes(strokes: dict, clasified):
 def _load_batch(path, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     return ckpt['strokes'], ckpt['labels']
-
 def _save_data_batch(data: Data, path: str):
     torch.save(data.to(torch.device('cpu')), path)
 
@@ -92,7 +89,7 @@ def load_data_batch(path: str, device) -> Data:
     data = torch.load(path, map_location=device, weights_only=False)
     return data
 
-def process_data_batch(batch: str, device) -> Data:
+def process_data_batch(batch: str, device, proxy_threshold:float, time_threshold:float) -> Data:
     if os.path.exists(batch[:-3]+"_proc.pt"):
         return load_data_batch(batch[:-3]+"_proc.pt", device=device)
 
@@ -104,16 +101,12 @@ def process_data_batch(batch: str, device) -> Data:
     y_list = []
 
     offset=0
-    configs={
-        "proxy_threshold":80.0,
-        "time_threshold":2.0
-    }
-    save_config(configs, "./batches/threshold.json")
+    
     for i in range(graphs.__len__()):
         strokes=graphs[i]
         current_y=true_y_graphs[i]
 
-        dict_features=features.extract_stroke_features(strokes, offset, configs['proxy_threshold'], configs['time_threshold'])
+        dict_features=features.extract_stroke_features(strokes, offset, proxy_threshold, time_threshold)
 
         node_vals = list(dict_features["nodes"].values())
         x_tmp = torch.tensor(list(zip(*node_vals)), dtype=torch.float)
@@ -171,7 +164,7 @@ def read_config(path: str):
         return json.load(f)
 
 def main_train_loop(device)-> tuple[List[int], EGAT_model]:
-    trs=read_config("./batches/threshold.json")
+    trs=read_config("./batches/setings.json")
     configs = {
         "out_channels": 2,
         "hidden_channels": 10,
@@ -186,8 +179,11 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         "early_stopper_patience": 150,
         "scheduler_patience": 10,
         "scheduler_threshold": 0.0001,
+
         "proxy_threshold" : trs["proxy_threshold"],
         "time_threshold" : trs["time_threshold"],
+        "features": trs["features"], 
+        
         "description": "EGAT model training run"
     }
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -195,8 +191,6 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     os.makedirs(run_dir, exist_ok=True)
     
     save_config(configs, join(run_dir, 'config.json'))
-
-    # TODO: save proc files
 
     path = './batches/'
     files = [f for f in os.listdir(path) if f.endswith('_proc.pt')]
@@ -314,28 +308,40 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
 
     return model
 
+def _config_get_feature_names() -> dict:
+    dummy_stroke = [[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0]]
+    dummy_strokes = [dummy_stroke, dummy_stroke]
+
+    feature = features.extract_stroke_features(dummy_strokes, 0, 1000.0, 1000.0)
+
+    # Extract the keys directly from the result
+    node_keys = list(feature["nodes"].keys())
+    edge_keys = list(feature["edges_features"].keys())
+
+    return {
+        "node_features": node_keys,
+        "edge_features": edge_keys,
+        "num_node_features": len(node_keys),
+        "num_edge_features": len(edge_keys)
+    }
+
 if __name__ == "__main__":
+    configs={
+        "proxy_threshold":80.0,
+        "time_threshold":2.0,
+        "features": _config_get_feature_names()
+    }
+    save_config(configs, "./batches/setings.json")
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     path = './batches/'
-    files = [f for f in os.listdir(path) if (isfile(join(path, f)) and f.endswith('.pt') and not f.endswith('_proc.pt'))]
+    
+    all_files = [f for f in os.listdir(path) if (isfile(join(path, f)) and f.endswith('.pt') and not f.endswith('_proc.pt'))]
+    files_to_process = [f for f in all_files if not os.path.exists(join(path, f[:-3]+"_proc.pt"))]
 
-    threads = []
-    for f in files:
-        strokes, true_y = _load_batch(path+f, device)                
-        
-        if not os.path.exists(join(path, f[:-3]+"_proc.pt")):
-            
-            #process_data_batch(join(path, f), device)
-            t = Process(target=process_data_batch, args=(join(path, f),device))
-            
-            threads.append(t)
+    tasks = [(join(path, f), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
 
-    part_t=[]
-    for i in range(threads.__len__()):
-        if i%15==0:
-            for mt in part_t:
-                mt.join()
-            part_t=[]
-        threads[i].start()
-        part_t.append(threads[i])
-        i+=1
+    with Pool(processes=10, maxtasksperchild=1) as pool:
+        pool.starmap(process_data_batch, tasks)
+    
+    print("All processes finished.")
