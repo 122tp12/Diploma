@@ -6,7 +6,7 @@ import torch
 
 
 mypath = './IAMonDo-db-1.0/'
-batch=16
+batch=4
 uniqe_types = []
 def parse_inkml(file_path: str):
 

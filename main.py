@@ -188,17 +188,17 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     trs=read_config("./batches/setings.json")
     configs = {
         "out_channels": 2,
-        "hidden_channels": 10,
+        "hidden_channels": 30,
         "hidden_layers": 2,
-        "heads": 4,
-        "lr": 0.05,
+        "heads": 2,
+        "lr": 0.005,
         "weight_decay": 5e-4,
         "batch_size": 16, # Change manualy
         "edge_treshhold": 80, # Change manualy
         "epochs": 1000,
         "factor": 0.5,
         "early_stopper_patience": 150,
-        "scheduler_patience": 10,
+        "scheduler_patience": 25,
         "scheduler_threshold": 0.0001,
 
         "proxy_threshold" : trs["proxy_threshold"],
@@ -323,22 +323,21 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_train_loss, avg_train_acc, avg_val_loss, avg_val_acc, current_lr, epoch_time])
 
-        if epoch % 1 == 0:
+        if epoch % 5 == 0:
             print(f'Epoch {epoch:>3} | Train Loss: {avg_train_loss:.5f} | Train Acc: '
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
                   f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
             
-        if (epoch+1) % 500 == 0:
+        if (epoch) % 50 == 0 and epoch!=0:
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'criterion_dict': criterion.state_dict(),
                 'loss': avg_val_loss,
                 'config': configs
             }
-            torch.save(checkpoint, join(run_dir, 'last_checkpoint.pt'))
+            torch.save(checkpoint, join(run_dir, f'model_shot_{epoch}.pt'))
             
         # Clean memory at end of epoch
         gc.collect()

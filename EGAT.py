@@ -81,7 +81,7 @@ class EGAT_model(torch.nn.Module):
             x = self.convs[i](x, edge_index, edge_attr=edge_attr)
             x = self.bns[i](x)      # Нормалізація
             x = F.elu(x)
-            x = F.dropout(x, p=0.6, training=self.training)
+            x = F.dropout(x, p=0.3, training=self.training)
 
         x = self.convs[-1](x, edge_index, edge_attr=edge_attr)
         return x
