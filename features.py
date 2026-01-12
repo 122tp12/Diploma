@@ -8,14 +8,13 @@ from scipy.spatial.distance import cdist
 type list_strokes = list[list[list[float]]]
 
 # Utility functions to create edge by proximity and time
-def get_edges(strokes: list_strokes, proxy_threshold: float = 50.0, time_threshold: float=2.0) -> list[tuple[int, int]]:
+def get_edges(strokes: list_strokes, proxy_threshold: float = 20.0, time_threshold: float=2.0) -> list[tuple[int, int]]:
     edges = []
-
     for i in range(len(strokes)):
-        for j in range(len(strokes)):
-            if i == j:
-                continue
-            if np.abs(strokes[i][-1][2]-strokes[j][0][2])<time_threshold or np.abs(strokes[i][0][2]-strokes[j][-1][2])<time_threshold:
+        for j in range(i + 1, len(strokes)):
+            
+            if np.abs(strokes[i][-1][2]-strokes[j][0][2]) < time_threshold or \
+               np.abs(strokes[i][0][2]-strokes[j][-1][2]) < time_threshold:
                 edges.append((i, j))
                 continue
             for point1 in strokes[i]:
@@ -24,6 +23,9 @@ def get_edges(strokes: list_strokes, proxy_threshold: float = 50.0, time_thresho
                     if distance < proxy_threshold:
                         edges.append((i, j))
                         break
+                else:
+                    continue  # only executed if the inner loop did NOT break
+                break  # only executed if the inner loop DID break
 
     return edges
 

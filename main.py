@@ -2,14 +2,18 @@ import csv
 from genericpath import isfile
 import os
 import json
+from pdb import run
 from posixpath import join
 import random
 import time
 import matplotlib.pyplot as plt
 from typing import List
 from torch_geometric.data import Data
+from torch_geometric.utils import to_undirected
 from sklearn.preprocessing import StandardScaler
 import datetime
+
+from torch_geometric.loader import DataLoader
 
 import torch
 import gc
@@ -17,6 +21,7 @@ import gc
 from multiprocessing import Pool
 
 from EGAT import EGAT_model, EarlyStopper, test, train_step, validate_step
+import StrokeGraphDataset_class
 import features
 
 # To save dependencies:
@@ -140,6 +145,12 @@ def process_data_batch(batch: str, device, proxy_threshold:float, time_threshold
     if data.x is None or data.edge_index is None or data.edge_attr is None:
         raise ValueError("Data object must have 'x', 'edge_index', and 'edge_attr' attributes.")
     
+    data.edge_index, data.edge_attr = to_undirected(
+        data.edge_index, 
+        data.edge_attr, 
+        reduce='mean' 
+    )
+
     scaler = StandardScaler()
     data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
     data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
@@ -188,13 +199,12 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     trs=read_config("./batches/setings.json")
     configs = {
         "out_channels": 2,
-        "hidden_channels": 30,
-        "hidden_layers": 2,
-        "heads": 2,
+        "hidden_channels": 64,
+        "hidden_layers": 3,
+        "heads": 8,
         "lr": 0.005,
         "weight_decay": 5e-4,
-        "batch_size": 16, # Change manualy
-        "edge_treshhold": 80, # Change manualy
+        "batch_size": 4,
         "epochs": 1000,
         "factor": 0.5,
         "early_stopper_patience": 150,
@@ -218,30 +228,44 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     random.seed(42)
     random.shuffle(all_files)
     
+    # Split files
     total_files = len(all_files)
     n_train = int(0.8 * total_files)
     n_val = int(0.1 * total_files)
-    # The rest is test
     
     train_files = all_files[:n_train]
     val_files = all_files[n_train:n_train+n_val]
-    test_files = all_files[n_train+n_val:]
+    test_files = all_files[n_train+n_val:] # TODO: test loop and if it is need at all
+
+    # --- 1. Instantiate Datasets ---
+    train_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, train_files)
+    val_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, val_files)
+    test_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, test_files)
+
+    # --- 2. Instantiate Loaders ---
+    # batch_size in config can now be used properly
+    batch_size = configs["batch_size"] 
     
-    print(f"Total Batches: {total_files} | Train: {len(train_files)} | Val: {len(val_files)} | Test: {len(test_files)}")
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    temp_data = load_data_batch(join(path, all_files[0]), device)
+    save_config({
+        "file train list:": train_dataset.file_list,
+        "file val list:": val_dataset.file_list,
+        "file test list:": test_dataset.file_list
+                 }, join(run_dir, "file_list"))
+    print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)} | Test batches: {len(test_loader)}")
 
+    sample_batch = next(iter(train_loader))
     model = EGAT_model(
-        in_channels=temp_data.x.size(1),
+        in_channels=sample_batch.x.size(1),
         hidden_channels=configs["hidden_channels"],
         out_channels=configs["out_channels"],
-        edge_dim=temp_data.edge_attr.size(1),
+        edge_dim=sample_batch.edge_attr.size(1),
         heads=configs["heads"],
         num_hiden_layers=configs["hidden_layers"]
     ).to(device)
-    
-    del temp_data 
-    torch.cuda.empty_cache()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
@@ -259,53 +283,51 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'lr', 'time'])
 
     early_stopper = EarlyStopper(patience=configs["early_stopper_patience"], path='./checkpoints/tmp_best_current_model.pt')
-
+    
     for epoch in range(configs["epochs"]):
         start_time = time.time()
 
         # --- TRAINING LOOP ---
+        model.train()
         epoch_train_loss = 0
         epoch_train_acc = 0
         train_count = 0
         
-        # Shuffle train files every epoch for better generalization
-        random.shuffle(train_files) 
-        
-        for file_name in train_files:
-            full_path = join(path, file_name)
-            data = load_data_batch(full_path, device)
+        for data in train_loader:
+            data = data.to(device)
             
-            data = set_batch_masks(data, 'train')
+            data.train_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
 
             loss, acc = train_step(model, data, criterion, optimizer)
             
             epoch_train_loss += loss
             epoch_train_acc += acc
             train_count += 1
-            
-            del data
-            # Clean up frequently
-            # gc.collect() 
-            # torch.cuda.empty_cache()
 
+            del data 
+            torch.cuda.empty_cache()
+
+            
         # --- VALIDATION LOOP ---
+        model.eval()
         epoch_val_loss = 0
         epoch_val_acc = 0
         val_count = 0
         
-        for file_name in val_files:
-            full_path = join(path, file_name)
-            data = load_data_batch(full_path, device)
+        for data in val_loader:
+            data = data.to(device)
 
-            data = set_batch_masks(data, 'val')
+            # REPLACEMENT FOR set_batch_masks('val')
+            data.val_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
             
             val_loss, val_acc = validate_step(model, data, criterion)
             
             epoch_val_loss += val_loss
             epoch_val_acc += val_acc
             val_count += 1
-            
-            del data
+
+            del data 
+            torch.cuda.empty_cache()
         
         # Avoid division by zero
         avg_train_loss = epoch_train_loss / train_count if train_count > 0 else 0
@@ -323,7 +345,7 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_train_loss, avg_train_acc, avg_val_loss, avg_val_acc, current_lr, epoch_time])
 
-        if epoch % 5 == 0:
+        if epoch % 1 == 0:
             print(f'Epoch {epoch:>3} | Train Loss: {avg_train_loss:.5f} | Train Acc: '
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
                   f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
@@ -352,20 +374,25 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     
     # --- TEST LOOP ON TEST SET ---
     print("\nStarting Test Evaluation...")
-    test_acc_sum = 0
+
+    epoch_test_acc = 0
     test_count = 0
-    for file_name in test_files:
-        full_path = join(path, file_name)
-        data = load_data_batch(full_path, device)
-        data = set_batch_masks(data, 'test')
-        
-        acc = test(model, data) 
-        test_acc_sum += acc
-        test_count += 1
-        del data
-        
-    final_test_acc = test_acc_sum / test_count if test_count > 0 else 0
-    print(f"Final Test Accuracy: {final_test_acc*100:.2f}%")
+    for data in test_loader:
+        data = data.to(device)
+
+        data.test_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+
+        test_acc=test(model, data)
+
+        epoch_test_acc+=test_acc
+        test_count+=1
+
+    
+    avg_test_acc = epoch_test_acc / test_count if test_count > 0 else 0
+
+    print(f"Final Test Accuracy: {avg_test_acc*100:.2f}%")
+    
+    save_config({"final_test_Accuracy":avg_test_acc},join(run_dir, 'final_acc.pt'))
 
     return model
 
@@ -387,7 +414,7 @@ def _config_get_feature_names() -> dict:
 
 if __name__ == "__main__":
     configs={
-        "proxy_threshold":80.0,
+        "proxy_threshold":40.0,
         "time_threshold":2.0,
         "features": _config_get_feature_names()
     }
