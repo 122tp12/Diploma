@@ -196,20 +196,24 @@ def set_batch_masks(data: Data, mode: str):
     return data
 
 def main_train_loop(device)-> tuple[List[int], EGAT_model]:
+    STOP_FILE = "stop_training.txt"
+    if os.path.exists(STOP_FILE):
+        os.remove(STOP_FILE)
+
     trs=read_config("./batches/setings.json")
     configs = {
         "out_channels": 2,
-        "hidden_channels": 64,
-        "hidden_layers": 3,
+        "hidden_channels": 128,
+        "hidden_layers": 2,
         "heads": 8,
         "lr": 0.005,
         "weight_decay": 5e-4,
         "batch_size": 4,
         "epochs": 1000,
         "factor": 0.5,
-        "early_stopper_patience": 150,
+        "early_stopper_patience": 200,
         "scheduler_patience": 25,
-        "scheduler_threshold": 0.0001,
+        "scheduler_threshold": 0.00005,
 
         "proxy_threshold" : trs["proxy_threshold"],
         "time_threshold" : trs["time_threshold"],
@@ -243,7 +247,6 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     test_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, test_files)
 
     # --- 2. Instantiate Loaders ---
-    # batch_size in config can now be used properly
     batch_size = configs["batch_size"] 
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -254,7 +257,7 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         "file train list:": train_dataset.file_list,
         "file val list:": val_dataset.file_list,
         "file test list:": test_dataset.file_list
-                 }, join(run_dir, "file_list"))
+                 }, join(run_dir, "file_list.json"))
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)} | Test batches: {len(test_loader)}")
 
     sample_batch = next(iter(train_loader))
@@ -369,6 +372,10 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
             print(f"Early stopping triggered at epoch {epoch}!")
             model = early_stopper.load_best_model(model, device)
             break
+        if os.path.exists(STOP_FILE):
+            print("\nStop file detected! Breaking loop...")
+            os.remove(STOP_FILE)
+            break
 
     model.save_model(join(run_dir, 'final_model.pt'))
     
@@ -392,7 +399,7 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
 
     print(f"Final Test Accuracy: {avg_test_acc*100:.2f}%")
     
-    save_config({"final_test_Accuracy":avg_test_acc},join(run_dir, 'final_acc.pt'))
+    save_config({"final_test_Accuracy":avg_test_acc},join(run_dir, 'final_acc.json'))
 
     return model
 

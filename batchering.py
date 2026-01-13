@@ -6,7 +6,7 @@ import torch
 
 
 mypath = './IAMonDo-db-1.0/'
-batch=1
+
 uniqe_types = []
 def parse_inkml(file_path: str):
 
@@ -142,18 +142,14 @@ def save_batch(path, strokes_batch, labels_batch):
 onlyfiles = [f for f in listdir(mypath) if (isfile(join(mypath, f)) and f.endswith('.inkml'))]
 
 random.shuffle(onlyfiles)
-batches = [onlyfiles[i:i + batch] for i in range(0, len(onlyfiles), batch)]
 
 i=0
-for batch_files in batches:
+for file in onlyfiles:
     strokes_batch = []
     true_y_batch = []
-    for file in batch_files:
-        file_path = join(mypath, file)
-        strokes, true_y = parse_inkml(file_path)
-
-        strokes_batch.append(strokes)
-        true_y_batch.append(true_y)
+    strokes, true_y = parse_inkml(join(mypath, file))
+    strokes_batch.append(strokes)
+    true_y_batch.append(true_y)
     save_batch(f'batches/batch{i}.pt', strokes_batch, true_y_batch)
     i+=1
 
