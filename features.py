@@ -801,6 +801,204 @@ def ratio_of_curvatures(strokes: list_strokes, edges: list[tuple[int, int]]) -> 
         
     return ratios
 
+# 17, 18
+def length_and_duration_ratios(strokes: list, edges: list[tuple[int, int]]) -> dict:
+    """
+    Calculates the ratio of lengths and durations between connected strokes.
+    Ratio is defined as min(val1, val2) / max(val1, val2).
+    """
+    # Reuse existing node feature functions to get raw values
+    lengths = trajectory_length(strokes)
+    durations = trajectory_duration(strokes)
+    
+    ratio_len = []
+    ratio_dur = []
+    
+    for u, v in edges:
+        # Feature 17: Ratio of lengths
+        l1 = lengths[u]
+        l2 = lengths[v]
+        # Avoid division by zero
+        denom_l = max(l1, l2, 1e-6)
+        ratio_len.append(min(l1, l2) / denom_l)
+        
+        # Feature 18: Ratio of durations
+        d1 = durations[u]
+        d2 = durations[v]
+        # Avoid division by zero
+        denom_d = max(d1, d2, 1e-6)
+        ratio_dur.append(min(d1, d2) / denom_d)
+        
+    return {
+        "ratio_length": ratio_len,     # 17
+        "ratio_duration": ratio_dur    # 18
+    }
+
+# 7, 8
+def off_stroke_features(strokes: list, edges: list[tuple[int, int]]) -> dict:
+    """
+    Calculates the spatial properties of the gap between two connected strokes.
+    
+    Determines the order of strokes (u->v or v->u) based on time.
+    Calculates:
+      - Euclidean distance of the gap (Feature 7)
+      - dx and dy of the gap (Feature 8)
+    """
+    # Pre-process start/end points and times
+    stroke_info = []
+    has_time = (len(strokes) > 0 and len(strokes[0]) > 0 and len(strokes[0][0]) >= 3)
+
+    for i, s in enumerate(strokes):
+        pts = np.array(s)
+        if len(pts) == 0:
+            stroke_info.append(None)
+            continue
+            
+        # We need the end of the first stroke and start of the second
+        start_pt = pts[0]
+        end_pt = pts[-1]
+        
+        if has_time:
+            t_start = start_pt[2]
+            t_end = end_pt[2]
+        else:
+            # Fallback to index order
+            t_start = float(i)
+            t_end = float(i) + 1.0
+            
+        stroke_info.append({
+            "p_start": start_pt[:2],
+            "p_end": end_pt[:2], 
+            "t_start": t_start,
+            "t_end": t_end
+        })
+        
+    feat_7 = []   # Euclidean distance
+    feat_8_x = [] # Projected X distance
+    feat_8_y = [] # Projected Y distance
+    
+    for u, v in edges:
+        s1 = stroke_info[u]
+        s2 = stroke_info[v]
+        
+        if s1 is None or s2 is None:
+            feat_7.append(0.0)
+            feat_8_x.append(0.0)
+            feat_8_y.append(0.0)
+            continue
+        
+        # Determine order: u -> v OR v -> u
+        # We assume the gap is from End(Predecessor) to Start(Successor)
+        
+        if s1['t_end'] <= s2['t_start']:
+            # Sequence: u then v
+            p_from = s1['p_end']
+            p_to = s2['p_start']
+        elif s2['t_end'] <= s1['t_start']:
+            # Sequence: v then u
+            p_from = s2['p_end']
+            p_to = s1['p_start']
+        else:
+            # Overlapping or ambiguous time: 
+            # We typically take the closest endpoints, or default to Index order.
+            # Here, we default to u->v if indices are ordered that way, or just u->v raw.
+            # To be robust, let's assume u -> v based on index if time fails
+            if u < v:
+                p_from = s1['p_end']
+                p_to = s2['p_start']
+            else:
+                p_from = s2['p_end']
+                p_to = s1['p_start']
+
+        dx = abs(p_to[0] - p_from[0])
+        dy = abs(p_to[1] - p_from[1])
+        dist = np.sqrt(dx**2 + dy**2)
+        
+        feat_7.append(float(dist))
+        feat_8_x.append(float(dx))
+        feat_8_y.append(float(dy))
+        
+    return {
+        "off_stroke_dist": feat_7,
+        "off_stroke_dx": feat_8_x,
+        "off_stroke_dy": feat_8_y
+    }
+
+# 2, 3, 4
+def endpoint_and_bbox_distance_features(strokes: list, edges: list[tuple[int, int]]) -> dict:
+    """
+    Calculates distance metrics related to endpoints and bounding boxes.
+    
+    Feature 2: Minimum distance between endpoints (start/end) of stroke A and stroke B.
+    Feature 3: Maximum distance between endpoints of stroke A and stroke B.
+    Feature 4: Euclidean distance between the centers of the Bounding Boxes of stroke A and B.
+    """
+    # 1. Pre-compute stroke properties (Endpoints and BBox Centers)
+    stroke_data = []
+    
+    for s in strokes:
+        pts = np.array(s)[:, :2]
+        if len(pts) == 0:
+            stroke_data.append(None)
+            continue
+            
+        # Endpoints
+        p_start = pts[0]
+        p_end = pts[-1]
+        
+        # Bounding Box Center
+        # Center = (Min + Max) / 2
+        min_xy = np.min(pts, axis=0)
+        max_xy = np.max(pts, axis=0)
+        bbox_center = (min_xy + max_xy) / 2.0
+        
+        stroke_data.append({
+            "start": p_start,
+            "end": p_end,
+            "center": bbox_center
+        })
+        
+    feat_2 = [] # Min endpoint dist
+    feat_3 = [] # Max endpoint dist
+    feat_4 = [] # BBox center dist
+    
+    for u, v in edges:
+        d1 = stroke_data[u]
+        d2 = stroke_data[v]
+        
+        if d1 is None or d2 is None:
+            feat_2.append(0.0)
+            feat_3.append(0.0)
+            feat_4.append(0.0)
+            continue
+            
+        # --- Features 2 & 3: Endpoint Distances ---
+        # There are 4 possible distances between endpoints:
+        # Start-Start, Start-End, End-Start, End-End
+        
+        # We can compute them manually or use cdist on small arrays
+        ends_u = np.array([d1['start'], d1['end']])
+        ends_v = np.array([d2['start'], d2['end']])
+        
+        # cdist returns 2x2 matrix
+        dists = cdist(ends_u, ends_v)
+        
+        feat_2.append(float(np.min(dists))) # Feature 2
+        feat_3.append(float(np.max(dists))) # Feature 3
+        
+        # --- Feature 4: BBox Center Distance ---
+        c1 = d1['center']
+        c2 = d2['center']
+        
+        center_dist = np.sqrt(np.sum((c1 - c2)**2))
+        feat_4.append(float(center_dist))
+        
+    return {
+        "min_dist_endpoints": feat_2, # 2
+        "max_dist_endpoints": feat_3, # 3
+        "dist_bbox_centers": feat_4   # 4
+    }
+
 def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time_threshold) -> dict:
     edges = get_edges(strokes, proxy_threshold, time_threshold)
 
@@ -812,6 +1010,10 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
 
     time_neigh_stats = get_time_neighbor_statistics(strokes, time_threshold)
     space_neigh_stats = get_spatial_neighbor_statistics(strokes, proxy_threshold)
+
+    len_dur_ratios = length_and_duration_ratios(strokes, edges)
+    off_stroke_feats = off_stroke_features(strokes, edges)
+    end_bbox_feats = endpoint_and_bbox_distance_features(strokes, edges)
     nodes_out = {
             "normalized_width": norm_feats["normalized_width"],   # 12
             "normalized_height": norm_feats["normalized_height"],     # 13
@@ -856,7 +1058,18 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
             "temporal_dist": temp_edge_feats["temporal_dist"],                                  # 9
             "ratio_off_temporal": temp_edge_feats["ratio_off_temporal"],      # 10
             "ratio_off_xy_temporal": temp_edge_feats["ratio_off_xy_temporal"], # 11
-            "ratio_curvatures": ratio_of_curvatures(strokes, edges),                                                     # 19
+            "ratio_curvatures": ratio_of_curvatures(strokes, edges),           # 19
+
+            "ratio_length": len_dur_ratios["ratio_length"],       # 17
+            "ratio_duration": len_dur_ratios["ratio_duration"],   # 18
+
+            "off_stroke_dist": off_stroke_feats["off_stroke_dist"], # 7
+            "off_stroke_dx": off_stroke_feats["off_stroke_dx"],     # 8 (X)
+            "off_stroke_dy": off_stroke_feats["off_stroke_dy"],     # 8 (Y)
+
+            "min_dist_endpoints": end_bbox_feats["min_dist_endpoints"], # 2
+            "max_dist_endpoints": end_bbox_feats["max_dist_endpoints"], # 3
+            "dist_bbox_centers": end_bbox_feats["dist_bbox_centers"],   # 4
         }
     
     applyed_offset_edges = [(a+offset, b+offset) for (a,b) in edges]
