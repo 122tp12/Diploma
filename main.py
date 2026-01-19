@@ -95,9 +95,9 @@ def load_data_batch(path: str, device) -> Data:
     data = torch.load(path, map_location=device, weights_only=False)
     return data
 
-def process_data_batch(batch: str, device, proxy_threshold:float, time_threshold:float) -> Data:
-    if os.path.exists(batch[:-3]+"_proc.pt"):
-        return load_data_batch(batch[:-3]+"_proc.pt", device=device)
+def process_data_batch(batch: str, destination: str, device, proxy_threshold:float, time_threshold:float) -> Data:
+    if os.path.exists(destination):
+        return load_data_batch(destination, device=device)
 
     graphs, true_y_graphs=_load_batch(batch, device)
 
@@ -165,7 +165,7 @@ def process_data_batch(batch: str, device, proxy_threshold:float, time_threshold
     data.train_mask = data.train_mask.to(device)
     data.val_mask = data.val_mask.to(device)
 
-    _save_data_batch(data, batch[:-3]+"_proc.pt")
+    _save_data_batch(data, destination)
     return data
 
 def save_config(config: dict, path: str):
@@ -195,25 +195,25 @@ def set_batch_masks(data: Data, mode: str):
         data.test_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
     return data
 
-def main_train_loop(device)-> tuple[List[int], EGAT_model]:
+def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT_model]:
     STOP_FILE = "stop_training.txt"
     if os.path.exists(STOP_FILE):
         os.remove(STOP_FILE)
 
-    trs=read_config("./batches/setings.json")
+    trs=read_config(join(dir_of_batches, "setings.json"))
     configs = {
-        "out_channels": 2,
-        "hidden_channels": 128,
-        "hidden_layers": 2,
-        "heads": 8,
-        "lr": 0.005,
-        "weight_decay": 5e-4,
-        "batch_size": 4,
-        "epochs": 1000,
-        "factor": 0.5,
-        "early_stopper_patience": 200,
-        "scheduler_patience": 25,
-        "scheduler_threshold": 0.00005,
+        "out_channels": setting["out_channels"],
+        "hidden_channels": setting["hidden_channels"],
+        "hidden_layers": setting["hidden_layers"],
+        "heads": setting["heads"],
+        "lr": setting["lr"],
+        "weight_decay": setting["weight_decay"],
+        "batch_size": setting["batch_size"],
+        "epochs": setting["epochs"],
+        "factor": setting["factor"],
+        "early_stopper_patience": setting["early_stopper_patience"],
+        "scheduler_patience": setting["scheduler_patience"],
+        "scheduler_threshold": setting["scheduler_threshold"],
 
         "proxy_threshold" : trs["proxy_threshold"],
         "time_threshold" : trs["time_threshold"],
@@ -222,12 +222,13 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
         "description": "EGAT model training run"
     }
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = f'./checkpoints/run_{timestamp}'
+    dir_or_setting=join("./checkpoints", configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
+    os.makedirs(dir_or_setting, exist_ok=True)
+    run_dir = join(dir_or_setting,f'run_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
     save_config(configs, join(run_dir, 'config.json'))
 
-    path = './batches/'
-    all_files = [f for f in os.listdir(path) if f.endswith('_proc.pt')]
+    all_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt')]
     
     random.seed(42)
     random.shuffle(all_files)
@@ -242,9 +243,9 @@ def main_train_loop(device)-> tuple[List[int], EGAT_model]:
     test_files = all_files[n_train+n_val:] # TODO: test loop and if it is need at all
 
     # --- 1. Instantiate Datasets ---
-    train_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, train_files)
-    val_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, val_files)
-    test_dataset = StrokeGraphDataset_class.StrokeGraphDataset(path, test_files)
+    train_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, train_files)
+    val_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, val_files)
+    test_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, test_files)
 
     # --- 2. Instantiate Loaders ---
     batch_size = configs["batch_size"] 
@@ -419,23 +420,32 @@ def _config_get_feature_names() -> dict:
         "num_edge_features": len(edge_keys)
     }
 
-if __name__ == "__main__":
+def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
     configs={
-        "proxy_threshold":40.0,
-        "time_threshold":2.0,
+        "proxy_threshold":proxy_threshold,
+        "time_threshold":time_threshold,
         "features": _config_get_feature_names()
     }
-    save_config(configs, "./batches/setings.json")
+    
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     path = './batches/'
     
     all_files = [f for f in os.listdir(path) if (isfile(join(path, f)) and f.endswith('.pt') and not f.endswith('_proc.pt'))]
-    files_to_process = [f for f in all_files if not os.path.exists(join(path, f[:-3]+"_proc.pt"))]
+    path_of_procesed_filed=join(path, configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
 
-    tasks = [(join(path, f), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
+    os.makedirs(path_of_procesed_filed, exist_ok=True)
+    save_config(configs, join(path_of_procesed_filed, "setings.json"))
+
+    files_to_process = [f for f in all_files if not os.path.exists(join(path_of_procesed_filed, f[:-3]+"_proc.pt"))]
+
+    tasks = [(join(path, f), join(path_of_procesed_filed, f[:-3]+"_proc.pt"), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
 
     with Pool(processes=10, maxtasksperchild=1) as pool:
         pool.starmap(process_data_batch, tasks)
     
-    print("All processes finished.")
+    print("All processes finished. Files created")
+    return path_of_procesed_filed 
+
+if __name__ == "__main__":
+    pre_process_files(proxy_threshold=40.0, time_threshold=2.0)

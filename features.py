@@ -71,7 +71,9 @@ def linearity_ratio(strokes: list_strokes) -> list[float]:
         end_point = points[-1]
         dist_end_to_end = np.linalg.norm(end_point - start_point)
         
-        diffs = points[1:] - points[:-1]
+        points_2d = points[:, :2]
+        dist_end_to_end = np.linalg.norm(points_2d[-1] - points_2d[0])
+        diffs = points_2d[1:] - points_2d[:-1]
         segment_lengths = np.linalg.norm(diffs, axis=1)
         total_trajectory_len = np.sum(segment_lengths)
         
@@ -115,7 +117,8 @@ def trajectory_length(strokes: list_strokes) -> list[float]:
             lengths.append(0.0)
             continue
             
-        diffs = points[1:] - points[:-1]
+        points_2d = points[:, :2]
+        diffs = points_2d[1:] - points_2d[:-1]
         segment_lengths = np.linalg.norm(diffs, axis=1)
         lengths.append(float(np.sum(segment_lengths)))
         
@@ -134,7 +137,7 @@ def area_of_convex_hull(strokes: list_strokes) -> list[float]:
             continue
             
         try:
-            hull = ConvexHull(points)
+            hull = ConvexHull(points[:, :2])
             areas.append(float(hull.volume))
         except Exception:
             areas.append(0.0)
@@ -322,6 +325,84 @@ def perpendicularity_features(strokes: list) -> dict:
         "squared_perpendicularity": squared_scores,
         "signed_perpendicularity": signed_scores
     }
+
+# 4
+def principal_axis_ratio(strokes: list) -> list[float]:
+    ratios = []
+    for s in strokes:
+        points = np.array(s)[:, :2]
+        if len(points) < 3:
+            ratios.append(0.0)
+            continue
+            
+        centroid = np.mean(points, axis=0)
+        centered_points = points - centroid
+        
+        cov = np.cov(centered_points, rowvar=False)
+        
+        eig_vals = np.linalg.eigvalsh(cov)
+        
+        max_eig = np.max(eig_vals)
+        min_eig = np.min(eig_vals)
+        
+        if max_eig <= 0:
+            ratios.append(1.0)
+        else:
+            min_eig = max(0.0, min_eig)
+            ratios.append(np.sqrt(min_eig / max_eig))
+            
+    return ratios
+
+# 5
+def rectangularity(strokes: list) -> list[float]:
+    scores = []
+    for s in strokes:
+        points = np.array(s)[:, :2]
+        
+        if len(points) < 3:
+            scores.append(1.0)
+            continue
+            
+        try:
+            hull = ConvexHull(points)
+            hull_area = hull.volume
+            
+            if hull_area == 0:
+                scores.append(1.0)
+                continue
+
+            hull_points = points[hull.vertices]
+            min_bbox_area = float('inf')
+            
+            diffs = hull_points[1:] - hull_points[:-1]
+            diffs = np.vstack([diffs, hull_points[0] - hull_points[-1]])
+            
+            for i, edge in enumerate(diffs):
+                norm = np.linalg.norm(edge)
+                if norm == 0: continue
+                
+                u = edge / norm
+                v = np.array([-u[1], u[0]])
+
+                proj_u = np.dot(hull_points, u)
+                proj_v = np.dot(hull_points, v)
+                
+                w = np.max(proj_u) - np.min(proj_u)
+                h = np.max(proj_v) - np.min(proj_v)
+                
+                area = w * h
+                if area < min_bbox_area:
+                    min_bbox_area = area
+
+            if min_bbox_area <= 0:
+                 scores.append(0.0)
+            else:
+                 scores.append(hull_area / min_bbox_area)
+
+        except Exception:
+            scores.append(0.0)
+            
+    return scores
 
 # Edge features:
 # 5, 6
@@ -547,15 +628,18 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
             "accumulated curvature": accumulated_curvature(strokes), # 9
 
             "num_temporal_neighbours": number_of_temporal_neighbors(strokes, time_threshold), # 14
-            "num_spatioal_neighbours": number_of_spatial_neighbors(strokes, proxy_threshold), # 15
+            "num_spatial_neighbours": number_of_spatial_neighbors(strokes, proxy_threshold), # 15
             "trajectory_length": trajectory_length(strokes), # 1
-            "Trajectory_duration": trajectory_duration(strokes), # 3
+            "trajectory_duration": trajectory_duration(strokes), # 3
             "area_convex_hull": area_of_convex_hull(strokes), # 2
+
+            "principal_axis_ratio": principal_axis_ratio(strokes), # 4
+            "rectangularity": rectangularity(strokes), # 5
 
             "accumulated_squared_perpendicularity": perpen_feats["squared_perpendicularity"], # 10
             "accumulated_signed_perpendicularity": perpen_feats["signed_perpendicularity"], # 11
             "circular_variance": circular_variance(strokes), # 6
-            "normalized_offset_along_pricipal_axis": principal_axis_features(strokes), # 7
+            "normalized_offset_along_principal_axis": principal_axis_features(strokes), # 7
         }
 
     edges_out = {
