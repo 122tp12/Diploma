@@ -404,6 +404,194 @@ def rectangularity(strokes: list) -> list[float]:
             
     return scores
 
+# 16, 17, 18, 19
+def get_time_neighbor_statistics(strokes: list, time_threshold: float = 2.0) -> dict:
+    """
+    Calculates statistics (Mean/Std) for Distances and Lengths of time neighbors.
+    Time neighbors are defined as strokes separated by a time gap < time_threshold.
+    
+    Returns:
+        dict: Keys for Features 16, 17, 18, 19
+    """
+    # 1. Pre-compute lengths (Feature 1 logic)
+    # We duplicate the logic here or call the existing function if available globally
+    # To ensure standalone correctness, I'll calculate lengths locally efficiently.
+    lengths = []
+    points_cache = []
+    
+    for s in strokes:
+        pts = np.array(s)[:, :2]
+        points_cache.append(pts)
+        
+        if len(pts) < 2:
+            lengths.append(0.0)
+        else:
+            diffs = pts[1:] - pts[:-1]
+            segment_lens = np.linalg.norm(diffs, axis=1)
+            lengths.append(float(np.sum(segment_lens)))
+            
+    # 2. Determine Time Intervals
+    intervals = []
+    has_time = (len(strokes) > 0 and len(strokes[0]) > 0 and len(strokes[0][0]) >= 3)
+    
+    if has_time:
+        for s in strokes:
+            intervals.append((s[0][2], s[-1][2]))
+    else:
+        # Fallback: Use index as time proxy
+        for i in range(len(strokes)):
+            intervals.append((float(i), float(i) + 1.0))
+            
+    # 3. Calculate Stats
+    feat_16 = [] # Avg Distance
+    feat_17 = [] # Std Distance
+    feat_18 = [] # Avg Length
+    feat_19 = [] # Std Length
+    
+    n = len(strokes)
+    
+    for i in range(n):
+        curr_start, curr_end = intervals[i]
+        pts_i = points_cache[i]
+        
+        neighbor_dists = []
+        neighbor_lens = []
+        
+        for j in range(n):
+            if i == j: continue
+            
+            other_start, other_end = intervals[j]
+            
+            # Calculate gap
+            if other_start > curr_end:
+                gap = other_start - curr_end
+            elif curr_start > other_end:
+                gap = curr_start - other_end
+            else:
+                gap = 0.0
+                
+            if gap < time_threshold:
+                # It is a time neighbor
+                neighbor_lens.append(lengths[j])
+                
+                # Calculate Spatial Distance (Min Euclidean Distance)
+                pts_j = points_cache[j]
+                if len(pts_i) == 0 or len(pts_j) == 0:
+                    dist = 0.0
+                else:
+                    # cdist returns matrix of all pair distances
+                    dists = cdist(pts_i, pts_j)
+                    dist = float(np.min(dists))
+                neighbor_dists.append(dist)
+                
+        if not neighbor_dists:
+            feat_16.append(0.0)
+            feat_17.append(0.0)
+            feat_18.append(0.0)
+            feat_19.append(0.0)
+        else:
+            feat_16.append(float(np.mean(neighbor_dists)))
+            feat_17.append(float(np.std(neighbor_dists)))
+            feat_18.append(float(np.mean(neighbor_lens)))
+            feat_19.append(float(np.std(neighbor_lens)))
+
+    return {
+        "avg_dist_time_neighbors": feat_16,  # 16
+        "std_dist_time_neighbors": feat_17,  # 17
+        "avg_len_time_neighbors": feat_18,   # 18
+        "std_len_time_neighbors": feat_19    # 19
+    }
+
+# 20, 21, 22, 23
+def get_spatial_neighbor_statistics(strokes: list, threshold: float = 50.0) -> dict:
+    """
+    Calculates statistics (Mean/Std) for Distances and Lengths of spatial neighbors.
+    Spatial neighbors are identified using KDTree on centroids (consistent with Feature 15).
+    
+    Distances calculated are the Minimum Euclidean Distances between stroke points.
+    """
+    # 1. Pre-compute lengths and centroids
+    lengths = []
+    points_cache = []
+    centroids = []
+    
+    for s in strokes:
+        pts = np.array(s)[:, :2]
+        points_cache.append(pts)
+        
+        # Length
+        if len(pts) < 2:
+            lengths.append(0.0)
+        else:
+            diffs = pts[1:] - pts[:-1]
+            segment_lens = np.linalg.norm(diffs, axis=1)
+            lengths.append(float(np.sum(segment_lens)))
+            
+        # Centroid
+        if len(pts) > 0:
+            center = np.mean(pts, axis=0)
+            centroids.append(center)
+        else:
+            centroids.append([0.0, 0.0])
+            
+    centroids = np.array(centroids)
+    
+    # 2. Find Spatial Neighbors using KDTree
+    # Note: KDTree requires at least one point
+    if len(centroids) == 0:
+         return {
+            "avg_dist_space_neighbors": [], "std_dist_space_neighbors": [],
+            "avg_len_space_neighbors": [], "std_len_space_neighbors": []
+        }
+
+    tree = KDTree(centroids)
+    # query_radius returns an array of arrays (indices of neighbors)
+    indices_list = tree.query_radius(centroids, r=threshold)
+    
+    feat_20 = [] # Avg Distance
+    feat_21 = [] # Std Distance
+    feat_22 = [] # Avg Length
+    feat_23 = [] # Std Length
+    
+    for i, neighbors in enumerate(indices_list):
+        pts_i = points_cache[i]
+        
+        neighbor_dists = []
+        neighbor_lens = []
+        
+        for j in neighbors:
+            if i == j: continue # Skip self
+            
+            # Store Length
+            neighbor_lens.append(lengths[j])
+            
+            # Calculate Min Euclidean Distance between actual strokes
+            pts_j = points_cache[j]
+            if len(pts_i) == 0 or len(pts_j) == 0:
+                dist = 0.0
+            else:
+                dists = cdist(pts_i, pts_j)
+                dist = float(np.min(dists))
+            neighbor_dists.append(dist)
+            
+        if not neighbor_dists:
+            feat_20.append(0.0)
+            feat_21.append(0.0)
+            feat_22.append(0.0)
+            feat_23.append(0.0)
+        else:
+            feat_20.append(float(np.mean(neighbor_dists)))
+            feat_21.append(float(np.std(neighbor_dists)))
+            feat_22.append(float(np.mean(neighbor_lens)))
+            feat_23.append(float(np.std(neighbor_lens)))
+            
+    return {
+        "avg_dist_space_neighbors": feat_20,
+        "std_dist_space_neighbors": feat_21,
+        "avg_len_space_neighbors": feat_22,
+        "std_len_space_neighbors": feat_23
+    }
+
 # Edge features:
 # 5, 6
 def centroid_distance_features(strokes: list_strokes, edges: list[tuple[int, int]]) -> dict:
@@ -621,6 +809,9 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
     centroid_dists = centroid_distance_features(strokes, edges)
     bbox_ratios = calculate_bbox_ratios(strokes, edges)
     temp_edge_feats = temporal_edge_features(strokes, edges)
+
+    time_neigh_stats = get_time_neighbor_statistics(strokes, time_threshold)
+    space_neigh_stats = get_spatial_neighbor_statistics(strokes, proxy_threshold)
     nodes_out = {
             "normalized_width": norm_feats["normalized_width"],   # 12
             "normalized_height": norm_feats["normalized_height"],     # 13
@@ -640,6 +831,16 @@ def extract_stroke_features(strokes: list_strokes, offset, proxy_threshold, time
             "accumulated_signed_perpendicularity": perpen_feats["signed_perpendicularity"], # 11
             "circular_variance": circular_variance(strokes), # 6
             "normalized_offset_along_principal_axis": principal_axis_features(strokes), # 7
+
+            "avg_dist_time_neighbors": time_neigh_stats["avg_dist_time_neighbors"], # 16
+            "std_dist_time_neighbors": time_neigh_stats["std_dist_time_neighbors"], # 17
+            "avg_len_time_neighbors": time_neigh_stats["avg_len_time_neighbors"],   # 18
+            "std_len_time_neighbors": time_neigh_stats["std_len_time_neighbors"],   # 19
+
+            "avg_dist_space_neighbors": space_neigh_stats["avg_dist_space_neighbors"], # 20
+            "std_dist_space_neighbors": space_neigh_stats["std_dist_space_neighbors"], # 21
+            "avg_len_space_neighbors": space_neigh_stats["avg_len_space_neighbors"],   # 22
+            "std_len_space_neighbors": space_neigh_stats["std_len_space_neighbors"],   # 23
         }
 
     edges_out = {
