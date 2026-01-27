@@ -27,63 +27,81 @@ import features
 # To save dependencies:
 # pip freeze > requirements.txt
 
-def plot_strokes(strokes: dict, clasified):
-    j=0
-    for j in range(strokes.__len__()):
-        points=strokes['t'+j.__str__()]
-        current_x = points[0][0]
-        current_y = points[0][1]
-        current_t=points[0][2]
-        current_f=points[0][3]
-        stroke_points = [(-current_x, current_y, current_t, current_f)]
-        if len(points)<2:
+def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = None):
+    """
+    Plots strokes colored by classification.
+    Assumes strokes are in absolute coordinates.
+    """
+    plt.figure(figsize=(6, 6))
+    
+    # Iterate through strokes
+    for j in range(len(strokes)):          
+        points = strokes[j]
+        if len(points) < 1:
             continue
-        i=2
-        vx, vy, vt, vf = points[1][0], points[1][1], points[1][2], points[1][3]
 
-        current_x += vx
-        current_y += vy
-        current_t += vt
-        current_f += vf
-        stroke_points.append((-current_x, current_y, current_t, current_f))
-
-        while i < len(points):
-            vx += points[i][0]
-            vy+=points[i][1]
-            vt+=points[i][2]
-            vf+=points[i][3]
-            
-            current_x += vx
-            current_y += vy
-            current_t += vt
-            current_f += vf
-            stroke_points.append((-current_x, current_y, current_t, current_f))
-            
-            i+=1
-
-        xs, ys, ts, fs = zip(*stroke_points)
-        if type(clasified)==dict:
-            if clasified['t'+j.__str__()]==1:
-                plt.plot(xs, ys, color='blue', linewidth=1)
-            elif clasified['t'+j.__str__()]==-1:
-                plt.plot(xs, ys, color='green', linewidth=5)
-            else:
-                plt.plot(xs, ys, color='red', linewidth=1)
-        else:
-            if clasified[j]==1:
-                plt.plot(xs, ys, color='blue', linewidth=1)
-            elif clasified[j]==-1:
-                plt.plot(xs, ys, color='green', linewidth=5)
-            else:
-                plt.plot(xs, ys, color='red', linewidth=1)
-            
+        # Extract coordinates directly (Absolute Coordinates)
+        # Maintaining the (-x) transformation from the original code for orientation
+        xs = [-p[0] for p in points]
+        ys = [p[1] for p in points]
         
-        j+=1
+        # --- Determine Labels ---
+        # Get Prediction
+        pred_label = 0
+        if isinstance(clasified, dict):
+            pred_label = clasified.get(j, 0)
+        else:
+            if j < len(clasified):
+                pred_label = clasified[j]
 
+        # Get True Label (if available)
+        real_label = None
+        if true_labels is not None:
+            if isinstance(true_labels, dict):
+                real_label = true_labels.get(j, 0)
+            else:
+                if j < len(true_labels):
+                    real_label = true_labels[j]
+
+        color = 'red'
+        linewidth = 1
+        
+        is_misclassified_special = False
+
+        if real_label is not None:
+            if real_label == 1 and pred_label != 1:
+                # Missed text as light blue (cyan)
+                color = 'cyan' 
+                linewidth = 2
+                is_misclassified_special = True
+            elif real_label == 0 and pred_label != 0:
+                # Missed non-text in orange
+                color = 'orange'
+                linewidth = 2
+                is_misclassified_special = True
+        
+        if not is_misclassified_special:
+            if pred_label == 1:
+                color = 'blue'
+                linewidth = 1
+            elif pred_label == -1:
+                color = 'green'
+                linewidth = 5
+            else:
+                color = 'red'
+                linewidth = 1
+        
+        plt.plot(xs, ys, color=color, linewidth=linewidth)
+        
     plt.axis('equal')
     plt.gca().axis('off')
-    plt.title("Render InkML")
-    plt.show()
+    plt.title("Render InkML (Pred)")
+    
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
 
 def _load_batch(path, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
@@ -228,6 +246,9 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     os.makedirs(run_dir, exist_ok=True)
     save_config(configs, join(run_dir, 'config.json'))
 
+    missed_tests_dir = join(run_dir, "missed_tests")
+    os.makedirs(missed_tests_dir, exist_ok=True)
+
     all_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt')]
     
     random.seed(42)
@@ -279,7 +300,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
             threshold=configs["scheduler_threshold"]
             )
     
-    criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0], device=device))
+    criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([5.0, 1.0], device=device))
 
     log_file = join(run_dir, 'metrics.csv')
     with open(log_file, 'w', newline='') as f:
@@ -401,6 +422,68 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     print(f"Final Test Accuracy: {avg_test_acc*100:.2f}%")
     
     save_config({"final_test_Accuracy":avg_test_acc},join(run_dir, 'final_acc.json'))
+
+    # --- FAILED TESTS VISUALIZATION LOOP ---
+    print("\nGenerating Failed Test Plots...")
+    
+    # We iterate manually to access raw strokes which are not in the graph tensors
+    raw_data_dir = os.path.dirname(dir_of_batches) # Assuming raw batches are in the parent of processed dir
+    
+    model.eval()
+    for file_name in test_files:
+        # Load processed graph (for model)
+        proc_path = join(dir_of_batches, file_name)
+        data = torch.load(proc_path, map_location=device, weights_only=False)
+        data = data.to(device)
+        
+        # Load raw data (for plotting)
+        raw_file_name = file_name.replace('_proc.pt', '.pt')
+        raw_path = join(raw_data_dir, raw_file_name)
+        
+        # Check if raw file exists (sanity check)
+        if not os.path.exists(raw_path):
+            print(f"Warning: Raw file {raw_path} not found. Skipping plot for {file_name}")
+            continue
+
+        raw_strokes_list, raw_labels_list = _load_batch(raw_path, device='cpu')
+
+        # Run model
+        with torch.no_grad():
+            out = model(data.x, data.edge_index, data.edge_attr) 
+            pred = out.argmax(dim=1)  # Predictions for all nodes in this batch
+
+        # The processed 'data' object is a concatenation of multiple graphs (strokes/characters).
+        # We need to map the flat prediction tensor back to individual raw graphs.
+        
+        current_idx = 0
+        for i, (strokes, true_labels) in enumerate(zip(raw_strokes_list, raw_labels_list)):
+            # Calculate how many nodes (strokes) are in this specific graph
+            # We can infer this from the extracted features, but we don't have them here easily.
+            # Alternatively, we rely on the fact that true_labels length = num_nodes
+            
+            num_nodes = len(true_labels)
+            
+            # Slice the predictions for this specific graph
+            graph_pred = pred[current_idx : current_idx + num_nodes].cpu().tolist()
+            graph_true = true_labels # already a list
+            
+            current_idx += num_nodes
+            
+            # Check if prediction matches truth
+            if graph_pred != graph_true:
+                # Mismatch found! Plot this specific graph.
+                
+                # Plot with PREDICTED labels AND TRUE labels for color logic
+                plot_filename = f"fail_{raw_file_name[:-3]}_idx{i}.png"
+                save_path = join(missed_tests_dir, plot_filename)
+                
+                plot_strokes(strokes, graph_pred, true_labels=graph_true, save_path=save_path)
+        
+        # Cleanup
+        del data
+        torch.cuda.empty_cache()
+
+    print(f"Failed test plots saved to: {missed_tests_dir}")
 
     return model
 
