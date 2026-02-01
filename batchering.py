@@ -1,7 +1,9 @@
 from os import listdir
 from os.path import isfile, join
 import random
+import math
 import xml.etree.ElementTree as ET
+from scipy.fftpack import shift
 import torch
 
 
@@ -58,6 +60,7 @@ def parse_inkml(file_path: str):
         return dataset
     
     def to_absolute_coords_and_y_align(strokes: dict, true: dict):
+        
         strokes_list=[]
         true_list=[]
         for j in strokes.keys():
@@ -66,7 +69,6 @@ def parse_inkml(file_path: str):
             current_y = points[0][1]
             current_t=points[0][2]
             current_f=points[0][3]
-            # scrap f to save memory
             stroke_points = [(-current_x, current_y, current_t)] # [(-current_x, current_y, current_t, current_f)]
             if len(points)<2: # skip points to propper features
                 continue
@@ -97,7 +99,25 @@ def parse_inkml(file_path: str):
                 i+=1
             strokes_list.append(stroke_points)
 
-        return strokes_list, true_list
+        shift_x=0
+        shift_y=0
+        for stroke in strokes_list:
+            for point in stroke:
+                if shift_x>point[0]:
+                    shift_x=point[0]
+                if shift_y>point[1]:
+                    shift_y=point[1]
+        
+        shifted_strokes_list=[]
+        for stroke in strokes_list:
+            shifted_stroke=[]
+            for point in stroke:
+                shifted_stroke.append((point[0]-shift_x, point[1]-shift_y, point[2]))
+            shifted_strokes_list.append(shifted_stroke)
+                
+        
+
+        return shifted_strokes_list, true_list
 
     tree = ET.parse(file_path)
 
@@ -139,19 +159,104 @@ def parse_inkml(file_path: str):
 def save_batch(path, strokes_batch, labels_batch):
     torch.save({'strokes': strokes_batch, 'labels': labels_batch}, path)
 
+def rotate(points, angle_deg):
+    if not points:
+        return points
+
+    # Determine if input is a single stroke or list of strokes
+    is_single = False
+    first = points[0]
+    if isinstance(first, (int, float)) or (isinstance(first, (list, tuple)) and isinstance(first[0], (int, float))):
+        # Looks like a single stroke (first element is a point)
+        strokes = [points]
+        is_single = True
+    else:
+        strokes = points
+
+    # Collect all coordinates to compute global centroid
+    xs = []
+    ys = []
+    for stroke in strokes:
+        for p in stroke:
+            xs.append(p[0])
+            ys.append(p[1])
+
+    if not xs:
+        return points
+
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+
+    if angle_deg>=0:
+        angle = -math.radians(angle_deg)
+    else:
+        angle = math.radians(-angle_deg)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    rotated_strokes = []
+    for stroke in strokes:
+        new_stroke = []
+        for x, y, *rest in stroke:
+            dx = x - cx
+            dy = y - cy
+            rx = dx * cos_a - dy * sin_a + cx
+            ry = dx * sin_a + dy * cos_a + cy
+            if rest:
+                new_stroke.append((rx, ry, *rest))
+            else:
+                new_stroke.append((rx, ry))
+        rotated_strokes.append(new_stroke)
+
+    # Ensure all coordinates are non-negative
+    min_x = min(p[0] for s in rotated_strokes for p in s)
+    min_y = min(p[1] for s in rotated_strokes for p in s)
+    shift_x = -min_x if min_x < 0 else 0.0
+    shift_y = -min_y if min_y < 0 else 0.0
+
+    if shift_x != 0.0 or shift_y != 0.0:
+        shifted = []
+        for s in rotated_strokes:
+            ns = []
+            for x, y, *rest in s:
+                rx = x + shift_x
+                ry = y + shift_y
+                if rest:
+                    ns.append((rx, ry, *rest))
+                else:
+                    ns.append((rx, ry))
+            shifted.append(ns)
+        rotated_strokes = shifted
+
+    return rotated_strokes[0] if is_single else rotated_strokes
+
+def scale(points, scale_factor_x, scale_factor_y):
+    scaled_strokes = []
+    for stroke in points:
+        new_stroke = []
+        for x, y, t in stroke:
+            sx = x * scale_factor_x
+            sy = y * scale_factor_y
+            new_stroke.append((sx, sy, t))
+        scaled_strokes.append(new_stroke)
+    return scaled_strokes
+
 onlyfiles = [f for f in listdir(mypath) if (isfile(join(mypath, f)) and f.endswith('.inkml'))]
 
-random.shuffle(onlyfiles)
-
-i=0
 for file in onlyfiles:
     strokes_batch = []
     true_y_batch = []
     strokes, true_y = parse_inkml(join(mypath, file))
     strokes_batch.append(strokes)
     true_y_batch.append(true_y)
-    save_batch(f'batches/batch{i}.pt', strokes_batch, true_y_batch)
-    i+=1
+    save_batch(f'batches/batch{file[:-6]}.pt', strokes_batch, true_y_batch)
 
-print(f'Total batches created: {i}')
+    #Augmentations
+    for i in range(3):
+        strokes_rotated = rotate(strokes, random.uniform(-15.0, 15.0))
+        strokes_scaled = scale(strokes_rotated, random.uniform(0.8, 1.2), random.uniform(0.8, 1.2))
+        strokes_batch = []
+        strokes_batch.append(strokes_scaled)
+        save_batch(f'batches/aug{i}_batch{file[:-6]}.pt', strokes_batch, true_y_batch)
+
 print(uniqe_types)

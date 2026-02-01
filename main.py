@@ -1,3 +1,4 @@
+from calendar import c
 import csv
 from genericpath import isfile
 import os
@@ -42,9 +43,10 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
 
         # Extract coordinates directly (Absolute Coordinates)
         # Maintaining the (-x) transformation from the original code for orientation
-        xs = [-p[0] for p in points]
+        xs = [p[0] for p in points]
         ys = [p[1] for p in points]
-        
+        if min(xs)<0 or min(ys)<0:
+            print("Warning: Negative coordinates detected in stroke points.")
         # --- Determine Labels ---
         # Get Prediction
         pred_label = 0
@@ -237,10 +239,15 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "time_threshold" : trs["time_threshold"],
         "features": trs["features"], 
         
-        "description": "EGAT model training run"
+        "description": setting["description"]
     }
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dir_or_setting=join("./checkpoints", configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
+    if "augmentation_value" in trs:
+        configs["augmentation_value"]=trs["augmentation_value"]
+        dir_or_setting=join("./checkpoints", configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__()+","+configs["augmentation_value"].__str__())
+
     os.makedirs(dir_or_setting, exist_ok=True)
     run_dir = join(dir_or_setting,f'run_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
@@ -249,20 +256,29 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     missed_tests_dir = join(run_dir, "missed_tests")
     os.makedirs(missed_tests_dir, exist_ok=True)
 
-    all_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt')]
+    all_og_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt') and not f.startswith('aug')]
     
     random.seed(42)
-    random.shuffle(all_files)
+    random.shuffle(all_og_files)
     
     # Split files
-    total_files = len(all_files)
+    total_files = len(all_og_files)
     n_train = int(0.8 * total_files)
     n_val = int(0.1 * total_files)
     
-    train_files = all_files[:n_train]
-    val_files = all_files[n_train:n_train+n_val]
-    test_files = all_files[n_train+n_val:] # TODO: test loop and if it is need at all
+    train_files = all_og_files[:n_train]
+    val_files = all_og_files[n_train:n_train+n_val]
+    test_files = all_og_files[n_train+n_val:]
 
+    # Add augmented files
+    aug_files = []
+    for f in train_files:
+        base = f.replace('_proc.pt', '')
+        aug_files.extend([af for af in os.listdir(dir_of_batches) if af.startswith('aug') and af.endswith('_proc.pt') and base in af])
+    train_files.extend(aug_files)
+
+    random.shuffle(train_files)
+    
     # --- 1. Instantiate Datasets ---
     train_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, train_files)
     val_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, val_files)
@@ -515,7 +531,12 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
     path = './batches/'
     
     all_files = [f for f in os.listdir(path) if (isfile(join(path, f)) and f.endswith('.pt') and not f.endswith('_proc.pt'))]
-    path_of_procesed_filed=join(path, configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
+    if any(s for s in all_files if s.startswith("aug")):
+        aug_val=max([int(s[3:4]) for s in all_files if s.startswith("aug")])+1
+        path_of_procesed_filed=join(path, configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__()+","+aug_val.__str__())
+        configs["augmentation_value"]=aug_val
+    else:
+        path_of_procesed_filed=join(path, configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
 
     os.makedirs(path_of_procesed_filed, exist_ok=True)
     save_config(configs, join(path_of_procesed_filed, "setings.json"))
