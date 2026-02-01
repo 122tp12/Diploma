@@ -51,3 +51,5 @@ env/
 
 # Checkpoints
 checkpoints/
+
+GAT_archive/

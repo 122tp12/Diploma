@@ -16,12 +16,14 @@ def get_edges(strokes: list_strokes, proxy_threshold: float = 20.0, time_thresho
             if np.abs(strokes[i][-1][2]-strokes[j][0][2]) < time_threshold or \
                np.abs(strokes[i][0][2]-strokes[j][-1][2]) < time_threshold:
                 edges.append((i, j))
+                edges.append((j, i))
                 continue
             for point1 in strokes[i]:
                 for point2 in strokes[j]:
                     distance = np.sqrt((point2[0] - point1[0])**2 + (point2[1] - point1[1])**2)
                     if distance < proxy_threshold:
                         edges.append((i, j))
+                        edges.append((j, i))
                         break
                 else:
                     continue  # only executed if the inner loop did NOT break

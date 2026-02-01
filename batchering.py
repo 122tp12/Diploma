@@ -25,7 +25,7 @@ def parse_inkml(file_path: str):
             'Marking_Bracket', 'Marking_Angle', 
             'Marking_Connection',
             'Document',
-            'Garbage'                                       # Сміття
+            'Garbage'
         }
         IGNORE_TYPES = {'Document'}
 

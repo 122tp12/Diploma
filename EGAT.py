@@ -3,15 +3,13 @@ from tabnanny import verbose
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
+from torch.nn import Linear, Sequential, BatchNorm1d, ReLU
 import numpy as np
+
+
 
 class EarlyStopper:
     def __init__(self, patience=150, min_delta=0, path='tmp_best_current_model.pt'):
-        """
-        patience: скільки епох чекати після останнього покращення.
-        min_delta: мінімальна зміна, яка вважається покращенням (щоб не реагувати на шум 0.000001).
-        path: куди зберігати найкращу модель.
-        """
         self.patience = patience
         self.min_delta = min_delta
         self.path = path
@@ -33,57 +31,120 @@ class EarlyStopper:
     def load_best_model(self, model, device):
         model.load_model(self.path, device)
         return model
-                
-class EGAT_model(torch.nn.Module):
 
-    def __init__(self, in_channels, hidden_channels, out_channels, edge_dim, num_hiden_layers=1, heads=4):
+class EGATLayer(torch.nn.Module):
+
+    def __init__(self, in_channels, out_channels, edge_dim, heads=4, concat=True):
         super().__init__()
         
-        self.convs = torch.nn.ModuleList()
-        self.bns = torch.nn.ModuleList()
-
-        # 1. Input Layer
-        # 'in_channels' -> 'hidden_channels * heads'
-        self.convs.append(GATv2Conv(
+        self.concat = concat
+        self.out_channels = out_channels
+        self.total_out_dim = out_channels * heads if concat else out_channels
+        
+        # 1. Node update
+        self.conv = GATv2Conv(
             in_channels=in_channels,
-            out_channels=hidden_channels,
+            out_channels=out_channels,
             heads=heads,
             edge_dim=edge_dim,
+            concat=concat,
+            add_self_loops=False
+        )
+        
+        # 2. Edge Update
+        self.lin_node = Linear(3 * self.total_out_dim, edge_dim)
+        self.lin_edge = Linear(edge_dim, edge_dim)
+        self.lin_reduce = Linear(2 * edge_dim, edge_dim)
+
+    def forward(self, x, edge_index, edge_attr):
+        # 1: h'
+        x_new = self.conv(x, edge_index, edge_attr=edge_attr)
+        
+        # 2: f'
+        row, col = edge_index
+        h_i = x_new[row]
+        h_j = x_new[col]
+        
+        feat_cat = torch.cat([h_i, h_j, torch.abs(h_i - h_j)], dim=-1)
+        r_ij = F.elu(self.lin_node(feat_cat))
+        
+        t_ij = F.elu(self.lin_edge(edge_attr))
+        
+        edge_cat = torch.cat([r_ij, t_ij], dim=-1)
+        edge_attr_new = F.elu(self.lin_reduce(edge_cat))
+        
+        return x_new, edge_attr_new
+
+class EGAT_model(torch.nn.Module):
+
+    def __init__(self, in_channels, hidden_channels, out_channels, edge_dim, num_hidden_layers=1, heads=4):
+        super().__init__()
+        
+        self.layers = torch.nn.ModuleList()
+        self.bns = torch.nn.ModuleList()
+        self.edge_bns = torch.nn.ModuleList()
+
+        # --- 1. Input layer ---
+        self.layers.append(EGATLayer(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            edge_dim=edge_dim,
+            heads=heads,
             concat=True
         ))
-        self.bns.append(torch.nn.BatchNorm1d(hidden_channels * heads))
+        self.bns.append(BatchNorm1d(hidden_channels * heads))
+        self.edge_bns.append(BatchNorm1d(edge_dim))
 
-        # 2. Hidden Layers
-        # hidden * heads
-        for _ in range(num_hiden_layers):
-            self.convs.append(GATv2Conv(
-                in_channels=hidden_channels * heads, # Previous layer output
-                out_channels=hidden_channels,        # Hidden out (concat=True -> *heads)
-                heads=heads,
+        # --- 2. Hidden layers ---
+        for _ in range(num_hidden_layers):
+            self.layers.append(EGATLayer(
+                in_channels=hidden_channels * heads,
+                out_channels=hidden_channels,
                 edge_dim=edge_dim,
+                heads=heads,
                 concat=True
             ))
-            self.bns.append(torch.nn.BatchNorm1d(hidden_channels * heads))
+            self.bns.append(BatchNorm1d(hidden_channels * heads))
+            self.edge_bns.append(BatchNorm1d(edge_dim))
 
-        # 3. Output Layer
-        # 'hidden_channels * heads' -> 'out_channels'
-        # Тут concat=False, тому heads=1 (або усереднюємо, якщо heads>1)
-        self.convs.append(GATv2Conv(
+        # --- 3. Output layer ---
+        self.final_conv = GATv2Conv(
             in_channels=hidden_channels * heads,
             out_channels=out_channels,
             heads=1,
             edge_dim=edge_dim,
             concat=False
-        ))
-
+        )
+    
     def forward(self, x, edge_index, edge_attr):
-        for i in range(len(self.convs) - 1):
-            x = self.convs[i](x, edge_index, edge_attr=edge_attr)
-            x = self.bns[i](x)      # Нормалізація
-            x = F.elu(x)
-            x = F.dropout(x, p=0.3, training=self.training)
+        
+        for i, layer in enumerate(self.layers):
+            # 1. Residual Connection
+            x_in = x
+            edge_attr_in = edge_attr
 
-        x = self.convs[-1](x, edge_index, edge_attr=edge_attr)
+            # 2.
+            x, edge_attr = layer(x, edge_index, edge_attr)
+            
+            # 3. Node (Residual + Norm + Act + Dropout)
+            if i > 0 and x.shape == x_in.shape:
+                x = x + x_in
+            
+            x = self.bns[i](x)      # BatchNorm
+            x = F.elu(x)
+            x = F.dropout(x, p=0.3, training=self.training) 
+
+            # 4. Edge (Residual + Norm + Act + Dropout)
+            if i > 0 and edge_attr.shape == edge_attr_in.shape:
+                edge_attr = edge_attr + edge_attr_in
+
+            edge_attr = self.edge_bns[i](edge_attr) # BatchNorm
+            edge_attr = F.elu(edge_attr)
+            edge_attr = F.dropout(edge_attr, p=0.3, training=self.training)
+
+        # Final Layer
+        x = self.final_conv(x, edge_index, edge_attr=edge_attr)
+        
         return x
     
     def save_model(self, path):

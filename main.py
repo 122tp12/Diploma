@@ -164,12 +164,6 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
     
     if data.x is None or data.edge_index is None or data.edge_attr is None:
         raise ValueError("Data object must have 'x', 'edge_index', and 'edge_attr' attributes.")
-    
-    data.edge_index, data.edge_attr = to_undirected(
-        data.edge_index, 
-        data.edge_attr, 
-        reduce='mean' 
-    )
 
     scaler = StandardScaler()
     data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
@@ -305,7 +299,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         out_channels=configs["out_channels"],
         edge_dim=sample_batch.edge_attr.size(1),
         heads=configs["heads"],
-        num_hiden_layers=configs["hidden_layers"]
+        num_hidden_layers=configs["hidden_layers"]
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
@@ -545,7 +539,7 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
 
     tasks = [(join(path, f), join(path_of_procesed_filed, f[:-3]+"_proc.pt"), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
 
-    with Pool(processes=10, maxtasksperchild=1) as pool:
+    with Pool(processes=15, maxtasksperchild=1) as pool:
         pool.starmap(process_data_batch, tasks)
     
     print("All processes finished. Files created")
