@@ -12,6 +12,54 @@ mypath = './IAMonDo-db-1.0/'
 uniqe_types = []
 def parse_inkml(file_path: str):
 
+    def get_canvas_transform(root):
+
+        try:
+
+            canvas_transform = root.find('.//{http://www.w3.org/2003/InkML}canvasTransform')
+            if canvas_transform is None:
+                canvas_transform = root.find('.//canvasTransform')
+            
+            if canvas_transform is not None:
+                matrix_elem = canvas_transform.find('.//{http://www.w3.org/2003/InkML}matrix')
+                if matrix_elem is None:
+                    matrix_elem = canvas_transform.find('.//matrix')
+                
+                if matrix_elem is not None and matrix_elem.text:
+                    matrix_text = matrix_elem.text.strip()
+                    rows = []
+                    for row_str in matrix_text.split(','):
+                        row_str = row_str.strip()
+                        if row_str:
+                            row = [float(x) for x in row_str.split()]
+                            rows.append(row)
+                    
+                    if len(rows) >= 2 and len(rows[0]) >= 3:
+                        return rows
+        except Exception as e:
+            print(f"Warning: Could not parse canvas transform: {e}")
+        
+        return None
+    
+    def apply_canvas_transform(points, matrix):
+        """Застосовує афінну трансформацію до координат"""
+        if matrix is None or len(matrix) < 2:
+            return points
+        
+        transformed = []
+        for x, y, *rest in points:
+            # Афінна трансформація: x' = m[0][0]*x + m[0][1]*y + m[0][4]
+            #                        y' = m[1][0]*x + m[1][1]*y + m[1][4]
+            new_x = matrix[0][0] * x + matrix[0][1] * y + (matrix[0][4] if len(matrix[0]) > 4 else 0)
+            new_y = matrix[1][0] * x + matrix[1][1] * y + (matrix[1][4] if len(matrix[1]) > 4 else 0)
+            
+            if rest:
+                transformed.append((new_x, new_y, *rest))
+            else:
+                transformed.append((new_x, new_y))
+        
+        return transformed
+
     def get_labeled_strokes(root) -> dict:
         dataset = {}
     
@@ -123,6 +171,8 @@ def parse_inkml(file_path: str):
 
     root = tree.getroot()
 
+    canvas_matrix = get_canvas_transform(root)
+
     traces = root.findall('.//{http://www.w3.org/2003/InkML}trace')
     if not traces:
         traces = root.findall('.//trace')
@@ -148,6 +198,10 @@ def parse_inkml(file_path: str):
                 parts= clean_text.split(' ')
                 
             tmp.append([float(p) for p in parts])
+        
+        if canvas_matrix is not None:
+            tmp = apply_canvas_transform(tmp, canvas_matrix)
+        
         strokes[trace.attrib[list(trace.attrib.keys())[0]]]=tmp
     
     true_y=get_labeled_strokes(root)

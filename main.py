@@ -41,14 +41,11 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
         if len(points) < 1:
             continue
 
-        # Extract coordinates directly (Absolute Coordinates)
-        # Maintaining the (-x) transformation from the original code for orientation
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         if min(xs)<0 or min(ys)<0:
             print("Warning: Negative coordinates detected in stroke points.")
-        # --- Determine Labels ---
-        # Get Prediction
+
         pred_label = 0
         if isinstance(clasified, dict):
             pred_label = clasified.get(j, 0)
@@ -383,7 +380,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         if epoch % 1 == 0:
             print(f'Epoch {epoch:>3} | Train Loss: {avg_train_loss:.5f} | Train Acc: '
                   f'{avg_train_acc*100:>6.2f}% | Val Loss: {avg_val_loss:.5f} | '
-                  f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:.6f}')
+                  f'Val Acc: {avg_val_acc*100:.2f}% | LR: {current_lr:e}')
             
         if (epoch) % 50 == 0 and epoch!=0:
             checkpoint = {
@@ -546,4 +543,5 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
     return path_of_procesed_filed 
 
 if __name__ == "__main__":
-    pre_process_files(proxy_threshold=40.0, time_threshold=2.0)
+    #pre_process_files(40.0, 2.0)
+    load_data_batch(jo)

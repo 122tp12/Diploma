@@ -69,9 +69,8 @@ class EGATLayer(torch.nn.Module):
         r_ij = F.elu(self.lin_node(feat_cat))
         
         t_ij = F.elu(self.lin_edge(edge_attr))
-        
-        edge_cat = torch.cat([r_ij, t_ij], dim=-1)
-        edge_attr_new = F.elu(self.lin_reduce(edge_cat))
+
+        edge_attr_new = F.elu(self.lin_reduce(torch.cat([r_ij, t_ij], dim=-1)))
         
         return x_new, edge_attr_new
 
@@ -132,7 +131,7 @@ class EGAT_model(torch.nn.Module):
             
             x = self.bns[i](x)      # BatchNorm
             x = F.elu(x)
-            x = F.dropout(x, p=0.3, training=self.training) 
+            x = F.dropout(x, p=0.2, training=self.training) 
 
             # 4. Edge (Residual + Norm + Act + Dropout)
             if i > 0 and edge_attr.shape == edge_attr_in.shape:
@@ -140,7 +139,7 @@ class EGAT_model(torch.nn.Module):
 
             edge_attr = self.edge_bns[i](edge_attr) # BatchNorm
             edge_attr = F.elu(edge_attr)
-            edge_attr = F.dropout(edge_attr, p=0.3, training=self.training)
+            edge_attr = F.dropout(edge_attr, p=0.2, training=self.training)
 
         # Final Layer
         x = self.final_conv(x, edge_index, edge_attr=edge_attr)
