@@ -76,13 +76,13 @@ class EGATLayer(torch.nn.Module):
 
 class EGAT_model(torch.nn.Module):
 
-    def __init__(self, in_channels, hidden_channels, out_channels, edge_dim, num_hidden_layers=1, heads=4):
+    def __init__(self, in_channels, hidden_channels, out_channels, edge_dim, num_hidden_layers=1, heads=4, dropout=0.1):
         super().__init__()
-        
+        self.dropout = dropout
         self.layers = torch.nn.ModuleList()
         self.bns = torch.nn.ModuleList()
         self.edge_bns = torch.nn.ModuleList()
-
+        
         # --- 1. Input layer ---
         self.layers.append(EGATLayer(
             in_channels=in_channels,
@@ -131,7 +131,7 @@ class EGAT_model(torch.nn.Module):
             
             x = self.bns[i](x)      # BatchNorm
             x = F.elu(x)
-            x = F.dropout(x, p=0.2, training=self.training) 
+            x = F.dropout(x, p=self.dropout, training=self.training) 
 
             # 4. Edge (Residual + Norm + Act + Dropout)
             if i > 0 and edge_attr.shape == edge_attr_in.shape:
@@ -139,7 +139,7 @@ class EGAT_model(torch.nn.Module):
 
             edge_attr = self.edge_bns[i](edge_attr) # BatchNorm
             edge_attr = F.elu(edge_attr)
-            edge_attr = F.dropout(edge_attr, p=0.2, training=self.training)
+            edge_attr = F.dropout(edge_attr, p=self.dropout, training=self.training)
 
         # Final Layer
         x = self.final_conv(x, edge_index, edge_attr=edge_attr)

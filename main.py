@@ -29,10 +29,7 @@ import features
 # pip freeze > requirements.txt
 
 def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = None):
-    """
-    Plots strokes colored by classification.
-    Assumes strokes are in absolute coordinates.
-    """
+
     plt.figure(figsize=(6, 6))
     
     # Iterate through strokes
@@ -220,6 +217,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "lr": setting["lr"],
         "weight_decay": setting["weight_decay"],
         "batch_size": setting["batch_size"],
+        "dropout": setting["dropout"],
         "epochs": setting["epochs"],
         "factor": setting["factor"],
         "early_stopper_patience": setting["early_stopper_patience"],
@@ -229,6 +227,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "proxy_threshold" : trs["proxy_threshold"],
         "time_threshold" : trs["time_threshold"],
         "features": trs["features"], 
+        
         
         "description": setting["description"]
     }
@@ -296,7 +295,8 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         out_channels=configs["out_channels"],
         edge_dim=sample_batch.edge_attr.size(1),
         heads=configs["heads"],
-        num_hidden_layers=configs["hidden_layers"]
+        num_hidden_layers=configs["hidden_layers"],
+        dropout=configs["dropout"]
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
@@ -536,12 +536,11 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
 
     tasks = [(join(path, f), join(path_of_procesed_filed, f[:-3]+"_proc.pt"), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
 
-    with Pool(processes=15, maxtasksperchild=1) as pool:
+    with Pool(processes=10, maxtasksperchild=1) as pool:
         pool.starmap(process_data_batch, tasks)
     
     print("All processes finished. Files created")
     return path_of_procesed_filed 
 
 if __name__ == "__main__":
-    #pre_process_files(40.0, 2.0)
-    load_data_batch(jo)
+    pre_process_files(40.0, 2.0)

@@ -42,7 +42,6 @@ def parse_inkml(file_path: str):
         return None
     
     def apply_canvas_transform(points, matrix):
-        """Застосовує афінну трансформацію до координат"""
         if matrix is None or len(matrix) < 2:
             return points
         
@@ -117,7 +116,7 @@ def parse_inkml(file_path: str):
             current_y = points[0][1]
             current_t=points[0][2]
             current_f=points[0][3]
-            stroke_points = [(-current_x, current_y, current_t)] # [(-current_x, current_y, current_t, current_f)]
+            stroke_points = [(current_x, -current_y, current_t)] 
             if len(points)<2: # skip points to propper features
                 continue
 
@@ -130,7 +129,7 @@ def parse_inkml(file_path: str):
             current_y += vy
             current_t += vt
             current_f += vf
-            stroke_points.append((-current_x, current_y, current_t))#stroke_points.append((-current_x, current_y, current_t, current_f))
+            stroke_points.append((current_x, -current_y, current_t))
 
             while i < len(points):
                 vx += points[i][0]
@@ -142,7 +141,7 @@ def parse_inkml(file_path: str):
                 current_y += vy
                 current_t += vt
                 current_f += vf
-                stroke_points.append((-current_x, current_y, current_t))#stroke_points.append((-current_x, current_y, current_t, current_f))
+                stroke_points.append((current_x, -current_y, current_t))
                 
                 i+=1
             strokes_list.append(stroke_points)
