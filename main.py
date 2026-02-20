@@ -248,7 +248,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
 
     all_og_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt') and not f.startswith('aug')]
     
-    random.seed(42)
+    random.seed(42) #TODO: seed
     random.shuffle(all_og_files)
     
     # Split files
@@ -266,7 +266,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         base = f.replace('_proc.pt', '')
         aug_files.extend([af for af in os.listdir(dir_of_batches) if af.startswith('aug') and af.endswith('_proc.pt') and base in af])
     train_files.extend(aug_files)
-
+    
     random.shuffle(train_files)
     
     # --- 1. Instantiate Datasets ---
@@ -433,60 +433,43 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     # --- FAILED TESTS VISUALIZATION LOOP ---
     print("\nGenerating Failed Test Plots...")
     
-    # We iterate manually to access raw strokes which are not in the graph tensors
-    raw_data_dir = os.path.dirname(dir_of_batches) # Assuming raw batches are in the parent of processed dir
-    
+    raw_data_dir = os.path.dirname(dir_of_batches)
+
     model.eval()
     for file_name in test_files:
-        # Load processed graph (for model)
         proc_path = join(dir_of_batches, file_name)
         data = torch.load(proc_path, map_location=device, weights_only=False)
         data = data.to(device)
         
-        # Load raw data (for plotting)
         raw_file_name = file_name.replace('_proc.pt', '.pt')
         raw_path = join(raw_data_dir, raw_file_name)
         
-        # Check if raw file exists (sanity check)
         if not os.path.exists(raw_path):
             print(f"Warning: Raw file {raw_path} not found. Skipping plot for {file_name}")
             continue
 
         raw_strokes_list, raw_labels_list = _load_batch(raw_path, device='cpu')
 
-        # Run model
         with torch.no_grad():
             out = model(data.x, data.edge_index, data.edge_attr) 
-            pred = out.argmax(dim=1)  # Predictions for all nodes in this batch
-
-        # The processed 'data' object is a concatenation of multiple graphs (strokes/characters).
-        # We need to map the flat prediction tensor back to individual raw graphs.
+            pred = out.argmax(dim=1)
         
         current_idx = 0
         for i, (strokes, true_labels) in enumerate(zip(raw_strokes_list, raw_labels_list)):
-            # Calculate how many nodes (strokes) are in this specific graph
-            # We can infer this from the extracted features, but we don't have them here easily.
-            # Alternatively, we rely on the fact that true_labels length = num_nodes
             
             num_nodes = len(true_labels)
             
-            # Slice the predictions for this specific graph
             graph_pred = pred[current_idx : current_idx + num_nodes].cpu().tolist()
-            graph_true = true_labels # already a list
+            graph_true = true_labels
             
             current_idx += num_nodes
             
-            # Check if prediction matches truth
             if graph_pred != graph_true:
-                # Mismatch found! Plot this specific graph.
-                
-                # Plot with PREDICTED labels AND TRUE labels for color logic
                 plot_filename = f"fail_{raw_file_name[:-3]}_idx{i}.png"
                 save_path = join(missed_tests_dir, plot_filename)
                 
                 plot_strokes(strokes, graph_pred, true_labels=graph_true, save_path=save_path)
         
-        # Cleanup
         del data
         torch.cuda.empty_cache()
 

@@ -53,3 +53,5 @@ env/
 checkpoints/
 
 GAT_archive/
+
+_for_ploting/

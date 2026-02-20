@@ -24,6 +24,13 @@
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: plot",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "ploting.py",
+            "console": "integratedTerminal"
         }
     ]
 }
