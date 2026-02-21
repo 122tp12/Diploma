@@ -161,6 +161,9 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
 
     scaler = StandardScaler()
     data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
+    if data.edge_attr.__len__() == 0:
+        print(f"Warning: No edge attributes found in batch {batch}. Skipping")
+        return data
     data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
 
     data.train_mask, data.val_mask = features.get_masks(true_y.__len__())
@@ -219,6 +222,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "batch_size": setting["batch_size"],
         "dropout": setting["dropout"],
         "epochs": setting["epochs"],
+        "full_augmentation": setting["full_augmentation"],
         "factor": setting["factor"],
         "early_stopper_patience": setting["early_stopper_patience"],
         "scheduler_patience": setting["scheduler_patience"],
@@ -246,9 +250,9 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     missed_tests_dir = join(run_dir, "missed_tests")
     os.makedirs(missed_tests_dir, exist_ok=True)
 
-    all_og_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt') and not f.startswith('aug')]
+    all_og_files = [f for f in os.listdir(dir_of_batches) if f.endswith('_proc.pt') and not f.startswith('aug') and not f.startswith('sep')]
     
-    random.seed(42) #TODO: seed
+    random.seed(42)
     random.shuffle(all_og_files)
     
     # Split files
@@ -264,9 +268,21 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     aug_files = []
     for f in train_files:
         base = f.replace('_proc.pt', '')
-        aug_files.extend([af for af in os.listdir(dir_of_batches) if af.startswith('aug') and af.endswith('_proc.pt') and base in af])
+        aug_files.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
     train_files.extend(aug_files)
-    
+    if configs["full_augmentation"]:
+        aug_files_val = []
+        for f in val_files:
+            base = f.replace('_proc.pt', '')
+            aug_files_val.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
+        val_files.extend(aug_files_val)
+
+        test_aug_files = []
+        for f in test_files:
+            base = f.replace('_proc.pt', '')
+            test_aug_files.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
+        test_files.extend(test_aug_files)
+
     random.shuffle(train_files)
     
     # --- 1. Instantiate Datasets ---
@@ -526,4 +542,12 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
     return path_of_procesed_filed 
 
 if __name__ == "__main__":
-    pre_process_files(40.0, 2.0)
+    
+    #pre_process_files(40.0, 2.0)
+    
+    
+    files = [f for f in os.listdir('./batches') if f.endswith('.pt') and "sep" in f]
+    for f in files:
+        print(f"Plotting {f}...")
+        a,b=_load_batch(join('./batches', f), device='cpu')
+        plot_strokes(a[0],b[0])
