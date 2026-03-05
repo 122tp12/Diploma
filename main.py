@@ -32,7 +32,9 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
 
     plt.figure(figsize=(6, 6))
     
-    # Iterate through strokes
+    color_map_2class = {0: 'red', 1: 'blue', -1: 'green'}
+    color_map_5class = {0: 'blue', 1: 'purple', 2: 'orange', 3: 'green', 4: 'brown'}
+    
     for j in range(len(strokes)):          
         points = strokes[j]
         if len(points) < 1:
@@ -50,7 +52,6 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
             if j < len(clasified):
                 pred_label = clasified[j]
 
-        # Get True Label (if available)
         real_label = None
         if true_labels is not None:
             if isinstance(true_labels, dict):
@@ -62,30 +63,28 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
         color = 'red'
         linewidth = 1
         
-        is_misclassified_special = False
+        is_misclassified = False
+        
+        if real_label is not None and real_label != pred_label:
+            is_misclassified = True
 
-        if real_label is not None:
-            if real_label == 1 and pred_label != 1:
-                # Missed text as light blue (cyan)
+            if (real_label in [0, 1]) and pred_label not in [0, 1]:
                 color = 'cyan' 
                 linewidth = 2
-                is_misclassified_special = True
-            elif real_label == 0 and pred_label != 0:
-                # Missed non-text in orange
-                color = 'orange'
+            elif (real_label not in [0, 1]) and pred_label in [0, 1]:
+                color = 'gold'
                 linewidth = 2
-                is_misclassified_special = True
-        
-        if not is_misclassified_special:
-            if pred_label == 1:
-                color = 'blue'
-                linewidth = 1
-            elif pred_label == -1:
-                color = 'green'
-                linewidth = 5
             else:
-                color = 'red'
-                linewidth = 1
+                color = 'gray'
+                linewidth = 1.5
+        
+        if not is_misclassified:
+            max_val = max(true_labels) if true_labels else (max(clasified) if isinstance(clasified, list) else 1)
+            
+            if max_val <= 1:
+                color = color_map_2class.get(pred_label, 'red')
+            else:
+                color = color_map_5class.get(pred_label, 'red')
         
         plt.plot(xs, ys, color=color, linewidth=linewidth)
         
@@ -109,7 +108,7 @@ def load_data_batch(path: str, device) -> Data:
     data = torch.load(path, map_location=device, weights_only=False)
     return data
 
-def process_data_batch(batch: str, destination: str, device, proxy_threshold:float, time_threshold:float) -> Data:
+def process_data_batch(batch: str, destination: str, device, proxy_threshold:float, time_threshold:float, all_classes=False) -> Data:
     if os.path.exists(destination):
         return load_data_batch(destination, device=device)
 
@@ -139,7 +138,37 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
         edge_attr_tmp = torch.tensor(list(zip(*edge_vals)), dtype=torch.float)
         edge_attr_list.append(edge_attr_tmp)
 
-        y_tmp = torch.tensor(current_y, dtype=torch.long)
+        if not all_classes:
+            TEXT_TYPES = {'Textblock', 'Textline', 'Word', 'List', 'Symbol'}
+            NONTEXT_TYPES = {
+                'Drawing', 'Diagram', 'Arrow', 'Formula',
+                'Table', 'Structure', 'Marking', 'Marking_Encircling',
+                'Correction', 'Marking_Underline', 'Marking_Sideline', 'Marking_Bracket', 
+                'Marking_Angle', 'Marking_Connection', 'Document', 'Garbage'
+            }
+            current_y_tmp = [1 if label in TEXT_TYPES else 0 for label in current_y]
+        else:
+            TEXT_TYPES = {'Textblock', 'Textline', 'Word', 'List', 'Symbol'}
+            TABLE_TYPES = {'Table', 'Structure'}
+            FORMULA_TYPES = {'Formula'}
+            DIAGRAM_TYPES = {'Drawing', 'Diagram'}
+            OTHER_TYPES = {'Marking', 'Marking_Encircling', 'Correction', 'Marking_Underline', 'Arrow',
+                           'Marking_Sideline', 'Marking_Bracket', 'Marking_Angle', 'Marking_Connection', 'Document', 'Garbage'}
+            current_y_tmp = []
+            for label in current_y:
+                if label in TEXT_TYPES:
+                    current_y_tmp.append(0)
+                elif label in TABLE_TYPES:
+                    current_y_tmp.append(1)
+                elif label in FORMULA_TYPES:
+                    current_y_tmp.append(2)
+                elif label in DIAGRAM_TYPES:
+                    current_y_tmp.append(3)
+                else:
+                    current_y_tmp.append(4)
+
+
+        y_tmp = torch.tensor(current_y_tmp, dtype=torch.long)
         y_list.append(y_tmp)
 
         offset += x_tmp.size(0)
@@ -166,15 +195,10 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
         return data
     data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
 
-    data.train_mask, data.val_mask = features.get_masks(true_y.__len__())
-
-
     data.x = data.x.to(device)
     data.edge_attr = data.edge_attr.to(device)
     data.edge_index = data.edge_index.to(device)
     data.y = data.y.to(device)
-    data.train_mask = data.train_mask.to(device)
-    data.val_mask = data.val_mask.to(device)
 
     _save_data_batch(data, destination)
     return data
@@ -222,7 +246,6 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "batch_size": setting["batch_size"],
         "dropout": setting["dropout"],
         "epochs": setting["epochs"],
-        "full_augmentation": setting["full_augmentation"],
         "factor": setting["factor"],
         "early_stopper_patience": setting["early_stopper_patience"],
         "scheduler_patience": setting["scheduler_patience"],
@@ -241,7 +264,8 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     if "augmentation_value" in trs:
         configs["augmentation_value"]=trs["augmentation_value"]
         dir_or_setting=join("./checkpoints", configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__()+","+configs["augmentation_value"].__str__())
-
+    if configs["out_channels"] == 5:
+        dir_or_setting=dir_or_setting+"(5)"
     os.makedirs(dir_or_setting, exist_ok=True)
     run_dir = join(dir_or_setting,f'run_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
@@ -263,6 +287,8 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     train_files = all_og_files[:n_train]
     val_files = all_og_files[n_train:n_train+n_val]
     test_files = all_og_files[n_train+n_val:]
+    
+    test_files_with_aug = all_og_files[n_train+n_val:]
 
     # Add augmented files
     aug_files = []
@@ -270,18 +296,12 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         base = f.replace('_proc.pt', '')
         aug_files.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
     train_files.extend(aug_files)
-    if configs["full_augmentation"]:
-        aug_files_val = []
-        for f in val_files:
-            base = f.replace('_proc.pt', '')
-            aug_files_val.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
-        val_files.extend(aug_files_val)
 
-        test_aug_files = []
-        for f in test_files:
-            base = f.replace('_proc.pt', '')
-            test_aug_files.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
-        test_files.extend(test_aug_files)
+    test_aug_files = []
+    for f in test_files_with_aug:
+        base = f.replace('_proc.pt', '')
+        test_aug_files.extend([af for af in os.listdir(dir_of_batches) if (af.startswith('aug') or af.startswith('sep')) and af.endswith('_proc.pt') and base in af])
+    test_files_with_aug.extend(test_aug_files)
 
     random.shuffle(train_files)
     
@@ -289,6 +309,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     train_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, train_files)
     val_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, val_files)
     test_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, test_files)
+    test_aug_dataset = StrokeGraphDataset_class.StrokeGraphDataset(dir_of_batches, test_files_with_aug)
 
     # --- 2. Instantiate Loaders ---
     batch_size = configs["batch_size"] 
@@ -296,6 +317,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_aug_loader = DataLoader(test_aug_dataset, batch_size=batch_size, shuffle=False)
 
     save_config({
         "file train list:": train_dataset.file_list,
@@ -315,6 +337,9 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         dropout=configs["dropout"]
     ).to(device)
 
+    del sample_batch
+    torch.cuda.empty_cache()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
             mode='min', 
@@ -323,7 +348,15 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
             threshold=configs["scheduler_threshold"]
             )
     
-    criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([5.0, 1.0], device=device))
+    if configs["out_channels"] == 2:
+        class_weights = torch.tensor([5.0, 1.0], device=device)
+    elif configs["out_channels"] == 5:
+        class_weights = torch.ones(configs["out_channels"], device=device) #TODO: weights for 5 classes
+        #class_weights = torch.tensor([5.0, 1.0, 1.0, 1.0, 1.0], device=device)
+    else:
+        class_weights = torch.ones(configs["out_channels"], device=device)
+    
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     log_file = join(run_dir, 'metrics.csv')
     with open(log_file, 'w', newline='') as f:
@@ -374,8 +407,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
             epoch_val_acc += val_acc
             val_count += 1
 
-            del data 
-            torch.cuda.empty_cache()
+            del data
         
         # Avoid division by zero
         avg_train_loss = epoch_train_loss / train_count if train_count > 0 else 0
@@ -431,22 +463,34 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     test_count = 0
     for data in test_loader:
         data = data.to(device)
-
         data.test_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
-
         test_acc=test(model, data)
 
         epoch_test_acc+=test_acc
         test_count+=1
 
-    
     avg_test_acc = epoch_test_acc / test_count if test_count > 0 else 0
-
     print(f"Final Test Accuracy: {avg_test_acc*100:.2f}%")
-    
     save_config({"final_test_Accuracy":avg_test_acc},join(run_dir, 'final_acc.json'))
 
-    # --- FAILED TESTS VISUALIZATION LOOP ---
+    # --- TEST LOOP ON TEST SET WITH AUGMENTATION ---
+    print("\nStarting Test with Augmentation Evaluation...")
+
+    epoch_test_acc = 0
+    test_count = 0
+    for data in test_aug_loader:
+        data = data.to(device)
+        data.test_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+        test_acc=test(model, data)
+
+        epoch_test_acc+=test_acc
+        test_count+=1
+
+    avg_test_acc = epoch_test_acc / test_count if test_count > 0 else 0
+    print(f"Final Test with Augmentation Accuracy: {avg_test_acc*100:.2f}%")
+    save_config({"final_test_aug_Accuracy":avg_test_acc},join(run_dir, 'final_acc_with_aug.json'))
+
+    # --- FAILED TESTS VISUALIZATION LOOP --- TODO: add aug if needed
     print("\nGenerating Failed Test Plots...")
     
     raw_data_dir = os.path.dirname(dir_of_batches)
@@ -471,13 +515,33 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
             pred = out.argmax(dim=1)
         
         current_idx = 0
+        
+        # Add the mapping categories
+        TEXT_TYPES = {'Textblock', 'Textline', 'Word', 'List', 'Symbol'}
+        TABLE_TYPES = {'Table', 'Structure'}
+        FORMULA_TYPES = {'Formula'}
+        DIAGRAM_TYPES = {'Drawing', 'Diagram'}
+        
         for i, (strokes, true_labels) in enumerate(zip(raw_strokes_list, raw_labels_list)):
             
             num_nodes = len(true_labels)
-            
             graph_pred = pred[current_idx : current_idx + num_nodes].cpu().tolist()
-            graph_true = true_labels
             
+            # Map raw strings to integers
+            mapped_true_labels = []
+            for label in true_labels:
+                if label in TEXT_TYPES:
+                    mapped_true_labels.append(0)
+                elif label in TABLE_TYPES:
+                    mapped_true_labels.append(1)
+                elif label in FORMULA_TYPES:
+                    mapped_true_labels.append(2)
+                elif label in DIAGRAM_TYPES:
+                    mapped_true_labels.append(3)
+                else:
+                    mapped_true_labels.append(4)
+            
+            graph_true = mapped_true_labels
             current_idx += num_nodes
             
             if graph_pred != graph_true:
@@ -490,6 +554,10 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         torch.cuda.empty_cache()
 
     print(f"Failed test plots saved to: {missed_tests_dir}")
+
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return model
 
@@ -509,7 +577,7 @@ def _config_get_feature_names() -> dict:
         "num_edge_features": len(edge_keys)
     }
 
-def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
+def pre_process_files(proxy_threshold:float, time_threshold:float, all_classes=False )-> str:
     configs={
         "proxy_threshold":proxy_threshold,
         "time_threshold":time_threshold,
@@ -527,13 +595,16 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
         configs["augmentation_value"]=aug_val
     else:
         path_of_procesed_filed=join(path, configs["proxy_threshold"].__str__()+","+configs["time_threshold"].__str__()+","+configs["features"]["num_node_features"].__str__()+","+configs["features"]["num_edge_features"].__str__())
+    
+    if all_classes:
+        path_of_procesed_filed=path_of_procesed_filed+"(5)"
 
     os.makedirs(path_of_procesed_filed, exist_ok=True)
     save_config(configs, join(path_of_procesed_filed, "setings.json"))
 
     files_to_process = [f for f in all_files if not os.path.exists(join(path_of_procesed_filed, f[:-3]+"_proc.pt"))]
 
-    tasks = [(join(path, f), join(path_of_procesed_filed, f[:-3]+"_proc.pt"), device, configs['proxy_threshold'], configs['time_threshold']) for f in files_to_process]
+    tasks = [(join(path, f), join(path_of_procesed_filed, f[:-3]+"_proc.pt"), device, configs['proxy_threshold'], configs['time_threshold'], all_classes) for f in files_to_process]
 
     with Pool(processes=10, maxtasksperchild=1) as pool:
         pool.starmap(process_data_batch, tasks)
@@ -542,12 +613,40 @@ def pre_process_files(proxy_threshold:float, time_threshold:float)-> str:
     return path_of_procesed_filed 
 
 if __name__ == "__main__":
+    """device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using device:', device)
+
+
+    setting_of_model={
+    "out_channels": 5,
+    "hidden_channels": 64,
+    "hidden_layers": 5,
+    "heads": 8,
+    "lr": 0.005,
+    "weight_decay": 5e-4,
+    "batch_size": 4,
+    "dropout": 0.1,
+    "epochs": 500,
+    "full_augmentation": False,
+    "factor": 0.1,
+    "early_stopper_patience": 200,
+    "scheduler_patience": 10,
+    "scheduler_threshold": 5e-11,
+    "description": "new augmentation (2, full), 3 layers, 128 hidden channels, dropout 0.1",
+    }
+    path="./batches/40.0,2.0,23,19,2(5)"
+    main_train_loop(device, setting_of_model, path)
+
+    gc.collect()
+    torch.cuda.empty_cache()"""
+
+
+
+    pre_process_files(40.0, 2.0, all_classes=True)
     
-    #pre_process_files(40.0, 2.0)
     
-    
-    files = [f for f in os.listdir('./batches') if f.endswith('.pt') and "sep" in f]
+    """files = [f for f in os.listdir('./batches') if f.endswith('.pt')]
     for f in files:
         print(f"Plotting {f}...")
         a,b=_load_batch(join('./batches', f), device='cpu')
-        plot_strokes(a[0],b[0])
+        plot_strokes(a[0],b[0])"""

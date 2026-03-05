@@ -69,10 +69,11 @@ def get_labeled_strokes(root) -> dict:
                 ann_text = child.text
                 if ann_text not in uniqe_types:
                     uniqe_types.append(ann_text)
-                if ann_text in TEXT_TYPES:
+                new_label = ann_text
+                """if ann_text in TEXT_TYPES:
                     new_label = 1
                 elif ann_text in NONTEXT_TYPES:
-                    new_label = 0
+                    new_label = 0"""
     
         ref = node.attrib.get('traceDataRef')
         if ref:
@@ -249,7 +250,6 @@ def get_complex_cases(file_path: str):
                 if ref:
                     trace_id = ref[1:]
                     info['trace_refs'].append(trace_id)
-                    # Перевіряємо заздалегідь згенеровані мітки штрихів
                     if trace_id in true_y:
                         if true_y[trace_id] == 1: info['has_text'] = True
                         if true_y[trace_id] == 0: info['has_graphic'] = True
