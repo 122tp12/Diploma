@@ -101,6 +101,7 @@ def plot_strokes(strokes: dict, clasified, true_labels=None, save_path: str = No
 def _load_batch(path, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     return ckpt['strokes'], ckpt['labels']
+
 def _save_data_batch(data: Data, path: str):
     torch.save(data.to(torch.device('cpu')), path)
 
@@ -118,6 +119,7 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
     edge_index_list = []
     edge_attr_list = []
     y_list = []
+    is_virtual_list = []
 
     offset=0
     
@@ -129,13 +131,30 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
 
         node_vals = list(dict_features["nodes"].values())
         x_tmp = torch.tensor(list(zip(*node_vals)), dtype=torch.float)
+        num_real_nodes = x_tmp.size(0)
+
+        # Virtual node
+        v_node_x = torch.zeros((1, x_tmp.size(1)), dtype=torch.float)
+        x_tmp = torch.cat([x_tmp, v_node_x], dim=0)
         x_list.append(x_tmp)
 
         edge_index_tmp = torch.tensor(dict_features["edge_index"], dtype=torch.long).t().contiguous()
+
+        v_node_idx = offset + num_real_nodes
+        real_nodes_indices = torch.arange(offset, offset + num_real_nodes, dtype=torch.long)
+        
+        edges_v_to_real = torch.stack([torch.full((num_real_nodes,), v_node_idx, dtype=torch.long), real_nodes_indices], dim=0)
+        edges_real_to_v = torch.stack([real_nodes_indices, torch.full((num_real_nodes,), v_node_idx, dtype=torch.long)], dim=0)
+        
+        edge_index_tmp = torch.cat([edge_index_tmp, edges_v_to_real, edges_real_to_v], dim=1)
         edge_index_list.append(edge_index_tmp)
 
         edge_vals = list(dict_features["edges_features"].values())
         edge_attr_tmp = torch.tensor(list(zip(*edge_vals)), dtype=torch.float)
+        edge_dim = edge_attr_tmp.size(1)
+        
+        v_edge_attr = torch.zeros((2 * num_real_nodes, edge_dim), dtype=torch.float)
+        edge_attr_tmp = torch.cat([edge_attr_tmp, v_edge_attr], dim=0)
         edge_attr_list.append(edge_attr_tmp)
 
         if not all_classes:
@@ -167,9 +186,13 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
                 else:
                     current_y_tmp.append(4)
 
-
+        current_y_tmp.append(0) 
         y_tmp = torch.tensor(current_y_tmp, dtype=torch.long)
         y_list.append(y_tmp)
+
+        is_virtual_tmp = torch.zeros(x_tmp.size(0), dtype=torch.bool)
+        is_virtual_tmp[-1] = True
+        is_virtual_list.append(is_virtual_tmp)
 
         offset += x_tmp.size(0)
 
@@ -177,12 +200,14 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
     edge_attr = torch.cat(edge_attr_list, dim=0)
     true_y = torch.cat(y_list, dim=0)
     edge_index = torch.cat(edge_index_list, dim=1)
+    is_virtual = torch.cat(is_virtual_list, dim=0)
 
     data=Data(
             x=x,
             edge_index=edge_index,
             edge_attr=edge_attr,
             y=true_y,
+            is_virtual=is_virtual
         )
     
     if data.x is None or data.edge_index is None or data.edge_attr is None:
@@ -190,15 +215,18 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
 
     scaler = StandardScaler()
     data.x = torch.from_numpy(scaler.fit_transform(data.x)).float()
+    
     if data.edge_attr.__len__() == 0:
         print(f"Warning: No edge attributes found in batch {batch}. Skipping")
         return data
+        
     data.edge_attr = torch.from_numpy(scaler.fit_transform(data.edge_attr)).float()
 
     data.x = data.x.to(device)
     data.edge_attr = data.edge_attr.to(device)
     data.edge_index = data.edge_index.to(device)
     data.y = data.y.to(device)
+    data.is_virtual = data.is_virtual.to(device)
 
     _save_data_batch(data, destination)
     return data
@@ -206,28 +234,28 @@ def process_data_batch(batch: str, destination: str, device, proxy_threshold:flo
 def save_config(config: dict, path: str):
     with open(path, 'w') as f:
         json.dump(config, f, indent=4)
+        
 def read_config(path: str):
     with open(path, 'r') as f:
         return json.load(f)
-
 
 def set_batch_masks(data: Data, mode: str):
     """
     Overwrites masks so the model sees the WHOLE graph as either Train, Val, or Test.
     """
     num_nodes = data.x.size(0)
+    valid_mask = ~data.is_virtual if hasattr(data, 'is_virtual') else torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
+    
+    data.train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+    data.val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+    data.test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+    
     if mode == 'train':
-        data.train_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.train_mask = valid_mask
     elif mode == 'val':
-        data.train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.val_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.val_mask = valid_mask
     elif mode == 'test':
-        data.train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.val_mask = torch.zeros(num_nodes, dtype=torch.bool, device=data.x.device)
-        data.test_mask = torch.ones(num_nodes, dtype=torch.bool, device=data.x.device)
+        data.test_mask = valid_mask
     return data
 
 def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT_model]:
@@ -254,7 +282,6 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         "proxy_threshold" : trs["proxy_threshold"],
         "time_threshold" : trs["time_threshold"],
         "features": trs["features"], 
-        
         
         "description": setting["description"]
     }
@@ -377,7 +404,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         for data in train_loader:
             data = data.to(device)
             
-            data.train_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+            data.train_mask = ~data.is_virtual
 
             loss, acc = train_step(model, data, criterion, optimizer)
             
@@ -398,8 +425,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
         for data in val_loader:
             data = data.to(device)
 
-            # REPLACEMENT FOR set_batch_masks('val')
-            data.val_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+            data.val_mask = ~data.is_virtual
             
             val_loss, val_acc = validate_step(model, data, criterion)
             
@@ -463,7 +489,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     test_count = 0
     for data in test_loader:
         data = data.to(device)
-        data.test_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+        data.test_mask = ~data.is_virtual
         test_acc=test(model, data)
 
         epoch_test_acc+=test_acc
@@ -480,7 +506,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     test_count = 0
     for data in test_aug_loader:
         data = data.to(device)
-        data.test_mask = torch.ones(data.x.size(0), dtype=torch.bool, device=device)
+        data.test_mask = ~data.is_virtual
         test_acc=test(model, data)
 
         epoch_test_acc+=test_acc
@@ -542,7 +568,9 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
                     mapped_true_labels.append(4)
             
             graph_true = mapped_true_labels
-            current_idx += num_nodes
+            
+            # Пропускаємо передбачення для віртуального вузла перед наступним графом
+            current_idx += (num_nodes + 1)
             
             if graph_pred != graph_true:
                 plot_filename = f"fail_{raw_file_name[:-3]}_idx{i}.png"
