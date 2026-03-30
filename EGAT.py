@@ -52,9 +52,7 @@ class EGATLayer(torch.nn.Module):
         )
         
         # 2. Edge Update
-        self.lin_node = Linear(3 * self.total_out_dim, edge_dim)
-        self.lin_edge = Linear(edge_dim, edge_dim)
-        self.lin_reduce = Linear(2 * edge_dim, edge_dim)
+        self.edge_gru = torch.nn.GRUCell(input_size=3 * self.total_out_dim, hidden_size=edge_dim)
 
     def forward(self, x, edge_index, edge_attr):
         # 1: h'
@@ -66,11 +64,7 @@ class EGATLayer(torch.nn.Module):
         h_j = x_new[col]
         
         feat_cat = torch.cat([h_i, h_j, torch.abs(h_i - h_j)], dim=-1)
-        r_ij = F.elu(self.lin_node(feat_cat))
-        
-        t_ij = F.elu(self.lin_edge(edge_attr))
-
-        edge_attr_new = F.elu(self.lin_reduce(torch.cat([r_ij, t_ij], dim=-1)))
+        edge_attr_new = self.edge_gru(feat_cat, edge_attr)
         
         return x_new, edge_attr_new
 
