@@ -61,7 +61,7 @@ def generate_combined_plot():
         for file_path in csv_files:
             try:
                 df = pd.read_csv(file_path)
-                df = df.iloc[40:]  # Skip first 40 epochs
+                df = df.iloc[:]  # Skip first 40 epochs
                 filename = os.path.basename(file_path)
                 
                 if metric in df.columns:
