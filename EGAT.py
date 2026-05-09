@@ -1,9 +1,7 @@
-from sched import scheduler
-from tabnanny import verbose
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
-from torch.nn import Linear, Sequential, BatchNorm1d, ReLU
+from torch.nn import BatchNorm1d
 import numpy as np
 
 
@@ -174,6 +172,9 @@ def train_step(model, data, criterion, optimizer):
     # 3. Backward
     optimizer.zero_grad()
     loss.backward()
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
     optimizer.step()
     
     acc = accuracy(out[data.train_mask].argmax(dim=1), data.y[data.train_mask])

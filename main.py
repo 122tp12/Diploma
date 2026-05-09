@@ -367,7 +367,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     del sample_batch
     torch.cuda.empty_cache()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=configs["lr"], weight_decay=configs["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
             mode='min', 
             factor=configs["factor"],
@@ -378,8 +378,7 @@ def main_train_loop(device, setting, dir_of_batches:str)-> tuple[List[int], EGAT
     if configs["out_channels"] == 2:
         class_weights = torch.tensor([5.0, 1.0], device=device)
     elif configs["out_channels"] == 5:
-        class_weights = torch.ones(configs["out_channels"], device=device) #TODO: weights for 5 classes
-        #class_weights = torch.tensor([5.0, 1.0, 1.0, 1.0, 1.0], device=device)
+        class_weights = torch.tensor([1.0, 4.0, 5.0, 5.0, 4.0], dtype=torch.float, device=device)
     else:
         class_weights = torch.ones(configs["out_channels"], device=device)
     
