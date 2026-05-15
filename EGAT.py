@@ -179,8 +179,6 @@ def train_step(model, data, criterion, optimizer):
     optimizer.zero_grad()
     loss.backward()
 
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
     optimizer.step()
     
     acc = accuracy(out[data.train_mask].argmax(dim=1), data.y[data.train_mask])
