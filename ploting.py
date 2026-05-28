@@ -1,11 +1,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np  # Додано для генерації індексів
 import os
 import glob
 
 FOLDER_NAME = '_for_ploting'
 X_AXIS_COL = 'epoch'
 OUTPUT_FILENAME = 'combined_comparison.png'
+WINDOW_SIZE = 1     # Кількість епох для усереднення в одній точці
 
 def generate_combined_plot():
     current_dir = os.getcwd()
@@ -61,15 +63,35 @@ def generate_combined_plot():
         for file_path in csv_files:
             try:
                 df = pd.read_csv(file_path)
-                df = df.iloc[:]  # Skip first 40 epochs
+                df = df.iloc[:50]  
                 filename = os.path.basename(file_path)
                 
                 if metric in df.columns:
-                    ax.plot(df[X_AXIS_COL], df[metric], label=filename, marker='.', linewidth=2)
+                    
+                    # 1. Розбиваємо дані на групи по WINDOW_SIZE (5) елементів
+                    group_ids = np.arange(len(df)) // WINDOW_SIZE
+                    
+                    # 2. Обчислюємо середнє значення та стандартне відхилення для кожної групи
+                    df_mean = df.groupby(group_ids).mean()
+                    df_std = df.groupby(group_ids).std()
+                    
+                    x = df_mean[X_AXIS_COL]
+                    y = df_mean[metric]
+                    
+                    # Заповнюємо можливі NaN нулями (виникає, якщо в останній групі залишився лише 1 елемент)
+                    y_err = df_std[metric].fillna(0) 
+                    
+                    # 3. Будуємо основну лінію середнього значення. 
+                    # Зберігаємо об'єкт [0], щоб отримати автоматично призначений колір
+                    line = ax.plot(x, y, label=filename, marker='.', linewidth=2)[0]
+                    
+                    # 4. Будуємо напівпрозоре (alpha=0.2) відхилення тим самим кольором
+                    ax.fill_between(x, y - y_err, y + y_err, color=line.get_color(), alpha=0.2)
+
                 else:
                     print(f"Warning: {filename} missing column '{metric}'")
-            except:
-                pass
+            except Exception as e:
+                print(f"Error plotting {filename}: {e}")
 
         ax.set_ylabel(metric, fontweight='bold')
         ax.set_title(f'Comparison: {metric}')

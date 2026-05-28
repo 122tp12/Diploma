@@ -140,14 +140,26 @@ class EGAT_model(torch.nn.Module):
     
     def save_model(self, path):
         torch.save(self.state_dict(), path)
+
     def load_model(self, path, device):
         checkpoint = torch.load(path, map_location=device)
-        if isinstance(checkpoint, dict):
-            self.load_state_dict(checkpoint)
-        elif hasattr(checkpoint, 'state_dict'):
-            self.load_state_dict(checkpoint.state_dict())
+
+        # Support raw state_dict, full checkpoint dicts, or saved model objects.
+        if hasattr(checkpoint, 'state_dict'):
+            state_dict = checkpoint.state_dict()
+        elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        elif isinstance(checkpoint, dict):
+            state_dict = checkpoint
         else:
             raise RuntimeError(f'Unrecognized checkpoint format: {type(checkpoint)}')
+
+        load_result = self.load_state_dict(state_dict, strict=False)
+        if load_result.missing_keys or load_result.unexpected_keys:
+            print(f"Warning: loaded checkpoint with mismatched parameters:\n"
+                  f"  missing keys: {load_result.missing_keys}\n"
+                  f"  unexpected keys: {load_result.unexpected_keys}")
+
         self.eval()
         return self
 
