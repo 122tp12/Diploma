@@ -55,3 +55,7 @@ checkpoints/
 GAT_archive/
 
 _for_ploting/
+
+IAMonDo-db-1.0/
+
+__pycache__/
